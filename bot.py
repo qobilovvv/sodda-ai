@@ -57,12 +57,15 @@ async def handle_message(message: types.Message):
             # Robust image extraction using regex
             image_match = re.search(r"IMAGE:\s*(https?://[^\s\n]+)", answer)
             
+            # If the LLM repeats the placeholder 'IMAGE: ImageURL' or says 'IMAGE: None'
+            # we should skip sending a photo and just send the text.
             if image_match:
                 image_url = image_match.group(1).strip()
-                # Remove the IMAGE: line from the text
+                # Remove the IMAGE: line from the text for the caption
                 caption = re.sub(r"IMAGE:\s*https?://[^\s\n]+", "", answer).strip()
                 
-                if image_url and image_url.lower() != "none":
+                # Double check that we didn't just match the literal placeholder string
+                if image_url and "ImageURL" not in image_url:
                     try:
                         await message.answer_photo(
                             photo=image_url, 
@@ -71,12 +74,14 @@ async def handle_message(message: types.Message):
                         )
                         return
                     except Exception as img_error:
-                        logging.error(f"Image send failed: {img_error}")
+                        logging.error(f"Image send failed for {image_url}: {img_error}")
                         # Fallback if image fails
                         await message.answer(answer, parse_mode="Markdown")
                         return
 
-            await message.answer(answer, parse_mode="Markdown")
+            # If no valid image URL was found, remove any "IMAGE: ..." lines and send as text
+            clean_answer = re.sub(r"IMAGE:.*", "", answer).strip()
+            await message.answer(clean_answer, parse_mode="Markdown")
 
         except Exception as e:
             logging.error(f"Error handling message: {e}")

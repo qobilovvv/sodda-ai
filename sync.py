@@ -85,15 +85,15 @@ def sync_vector_db():
         image_url = extract_image_url(p['images'])
 
         page_content = (
-            f"Product: {title}\n"
-            f"Category: {category}\n"
-            f"Brand: {brand}\n"
-            f"Characteristics: {specs}\n"
-            f"Description: {description}\n"
-            f"Model: {p['model']}\n"
-            f"Price: {p['price']} UZS\n"
-            f"Keywords: {p['keywords']}\n"
-            f"ImageURL: {image_url}" 
+            f"PRODUCT_TITLE: {title}\n"
+            f"MODEL: {p['model']}\n"
+            f"BRAND: {brand}\n"
+            f"CATEGORY: {category}\n"
+            f"PRICE: {p['price']} UZS\n"
+            f"IMAGE_LINK: {image_url}\n"
+            f"CHARACTERISTICS: {specs}\n"
+            f"DESCRIPTION: {description}\n"
+            f"KEYWORDS: {p['keywords']}"
         )
 
         metadata = {

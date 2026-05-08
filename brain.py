@@ -42,12 +42,15 @@ QOIDALAR:
      📌 [Tavsifdan 1 ta qisqa gap]
      ---
    - BATAFSIL (Bitta mahsulot haqida so'ralsa):
-     IMAGE: [ImageURL]
+     IMAGE: [Kontekstdagi IMAGE_LINK qatoridagi haqiqiy linkni shu yerga qo'ying. Agar link bo'lmasa, None deb yozing]
      **[Mahsulot nomi]**
      💰 Narxi: [Price] $
      🛠 Xarakteristikalar:
      • [Xarakteristika 1]
      [To'liq tavsif]
+
+   MUHIM: "IMAGE: IMAGE_LINK" deb yozmang! Kontekstdagi haqiqiy URLni ishlating. Agar URL topilmasa "IMAGE: None" deb yozing.
+
 
 Agar kontekstda ham, suhbat tarixida ham mos mahsulot bo'lmasa, "Kechirasiz, bunday mahsulot topilmadi." deb javob bering.
 
@@ -71,25 +74,47 @@ with_message_history = RunnableWithMessageHistory(
 )
 
 def ask_ai(user_query: str, chat_id: str):
-    logging.info(f"Query: {user_query}")
+    logging.info(f"Original Query: {user_query}")
     
-    # 1. First, search with a relevance score threshold to avoid hallucinations on irrelevant queries
-    # Using similarity_search_with_relevance_scores
-    # Note: 'text-embedding-3-small' with cosine similarity in Chroma often gives scores around 0.3-0.4 for good matches.
-    scored_docs = vector_db.similarity_search_with_relevance_scores(user_query, k=5)
+    # 1. Query Rewriting: Use LLM to refine the query based on history
+    # This helps with typos (media -> Midea) and context (nima u? -> Midea MF100W nima u?)
+    history = get_session_history(chat_id)
+    history_str = "\n".join([f"{m.type}: {m.content}" for m in history.messages[-5:]])
     
-    # Filter docs by threshold
-    threshold = 0.25
+    rewrite_prompt = f"""
+    Suhbat tarixi va oxirgi savol asosida, mahsulot qidirish uchun eng mos kalit so'zlarni qaytaring.
+    Faqat qidiruv so'zini qaytaring, ortiqcha matnsiz.
+    
+    Tarix:
+    {history_str}
+    
+    Savol: {user_query}
+    
+    Qidiruv so'zi:"""
+    
+    try:
+        rewritten_query_res = llm.invoke(rewrite_prompt)
+        search_query = rewritten_query_res.content.strip().strip('"')
+        logging.info(f"Rewritten Query: {search_query}")
+    except Exception as e:
+        logging.error(f"Query rewrite failed: {e}")
+        search_query = user_query
+
+    # 2. Search the vector database with the rewritten query
+    scored_docs = vector_db.similarity_search_with_relevance_scores(search_query, k=8)
+    
+    # Filter docs by a lower threshold (0.1) to allow for some flexibility
+    threshold = 0.1
     filtered_docs = [doc for doc, score in scored_docs if score >= threshold]
     
-    # If no good matches, we still provide history context because the user might be asking about a previously found item
     context = ""
     if filtered_docs:
         logging.info(f"Found {len(filtered_docs)} relevant documents.")
         context = "\n---\n".join([d.page_content for d in filtered_docs])
     else:
-        logging.warning(f"No documents met the relevance threshold ({threshold}) for query: {user_query}")
+        logging.warning(f"No documents met the relevance threshold ({threshold}) for query: {search_query}")
 
+    # 3. Generate the final response
     response = with_message_history.invoke(
         {"context": context, "question": user_query},
         config={"configurable": {"session_id": chat_id}}
