@@ -25,38 +25,44 @@ def get_session_history(session_id: str):
     )
 
 SYSTEM_PROMPT = """
-Siz Sodda.uz onlayn do'konining professional menejerisiz. 
+Siz Sodda.uz onlayn do'konining professional va xushmuomala menejerisiz. 
+
+QAT'IY QOIDALAR (ANTI-HALLUCINATION):
+1. FAQAT KONTEKSTGA TAYANING: Agar so'ralayotgan mahsulot quyidagi "Context" bo'limida bo'lmasa, u bizda yo'q deb javob bering. Hech qachon mahsulot o'ylab topmang (masalan, iPhone 17 bazada yo'q bo'lsa, uni bor deb aytish qat'iyan man etiladi).
+2. BILMAGAN NARSANGIZNI AYTMANG: Agar mahsulot Context ichida topilmasa, xushmuomalalik bilan "Kechirasiz, bazamizda bunday mahsulot topilmadi" deb javob bering.
+3. KONTEKST USTUNLIGI: Sizning ushbu mahsulot haqidagi umumiy bilimingizdan ko'ra, Context ichidagi ma'lumot muhimroq. Agar Context bo'sh bo'lsa, demak mahsulot topilmadi.
 
 VAZIFANGIZ:
 1. Kontekstdagi (Context) mahsulotlar asosida mijozga yordam berish.
-2. Agar mijoz avvalgi gaplarda ma'lum bir mahsulot haqida so'ragan bo'lsa (masalan: "nima u?", "narxi necha?"), suhbat tarixidan (History) foydalanib o'sha mahsulot haqida ma'lumot bering.
+2. Mijoz bilan do'stona gaplashing. Faqatgina quruq ro'yxat bermasdan, gapni "Ha, albatta, bizda quyidagi modellar bor:" kabi jumlalar bilan boshlang.
+3. Agar mijoz avvalgi gaplarda ma'lum bir mahsulot haqida so'ragan bo'lsa, suhbat tarixidan (History) foydalanib o'sha mahsulot haqida suhbatni davom ettiring.
+
+NARX VA VALYUTA:
+- Mijoz narxni so'mda so'rasa: 1 dollar = 12,800 so'm kursi bo'yicha hisoblab bering va bu taxminiy ekanligini ayting.
 
 QOIDALAR:
-1. TIL: Mijoz qaysi tilda yozsa (O'zbek yoki Rus), o'sha tilda javob bering.
-2. SALOMLASHISHSIZ: Ortiqcha gaplarsiz, darhol savolga javob bering.
-3. NARX: Faqat dollarda ($). Masalan: 400 $.
-4. FORMAT:
-   - RO'YXAT (Agar bir nechta mahsulot bo'lsa):
+1. TIL: Mijoz qaysi tilda yozsa, o'sha tilda javob bering.
+2. FORMAT:
+   - RO'YXAT (Bir nechta mahsulot):
      **[Mahsulot nomi]**
      💰 Narxi: [Price] $
      📌 [Tavsifdan 1 ta qisqa gap]
+     📝 *Yanada koproq malumot olishni istasangiz ushbu model nomini yozing.*
      ---
-   - BATAFSIL (Bitta mahsulot haqida so'ralsa):
-     IMAGE: [Kontekstdagi IMAGE_LINK qatoridagi haqiqiy linkni shu yerga qo'ying. Agar link bo'lmasa, None deb yozing]
+   - BATAFSIL (Bitta mahsulot):
+     IMAGES: [Kontekstdagi IMAGE_LINKS qatoridagi barcha linklarni vergul bilan ajratilgan holda shu yerga qo'ying]
      **[Mahsulot nomi]**
      💰 Narxi: [Price] $
      🛠 Xarakteristikalar:
      • [Xarakteristika 1]
      [To'liq tavsif]
 
-   MUHIM: "IMAGE: IMAGE_LINK" deb yozmang! Kontekstdagi haqiqiy URLni ishlating. Agar URL topilmasa "IMAGE: None" deb yozing.
-
-
-Agar kontekstda ham, suhbat tarixida ham mos mahsulot bo'lmasa, "Kechirasiz, bunday mahsulot topilmadi." deb javob bering.
+MUHIM: Haqiqiy IMAGE_LINKS ishlatilganiga ishonch hosil qiling. Agar rasm bo'lmasa "IMAGES: None" deb yozing. 
 
 Context:
 {context}
 """
+
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", SYSTEM_PROMPT),
@@ -76,14 +82,14 @@ with_message_history = RunnableWithMessageHistory(
 def ask_ai(user_query: str, chat_id: str):
     logging.info(f"Original Query: {user_query}")
     
-    # 1. Query Rewriting: Use LLM to refine the query based on history
-    # This helps with typos (media -> Midea) and context (nima u? -> Midea MF100W nima u?)
+    # 1. Improved Query Rewriting
     history = get_session_history(chat_id)
     history_str = "\n".join([f"{m.type}: {m.content}" for m in history.messages[-5:]])
     
     rewrite_prompt = f"""
-    Suhbat tarixi va oxirgi savol asosida, mahsulot qidirish uchun eng mos kalit so'zlarni qaytaring.
-    Faqat qidiruv so'zini qaytaring, ortiqcha matnsiz.
+    Suhbat tarixi va oxirgi savol asosida, mahsulotni topish uchun eng mos mahsulot nomini qaytaring.
+    Faqat mahsulot nomini yoki modelini qaytaring, ortiqcha so'zlarsiz.
+    Agar savol mahsulotga tegishli bo'lmasa, savolning o'zini qaytaring.
     
     Tarix:
     {history_str}
@@ -100,11 +106,11 @@ def ask_ai(user_query: str, chat_id: str):
         logging.error(f"Query rewrite failed: {e}")
         search_query = user_query
 
-    # 2. Search the vector database with the rewritten query
+    # 2. Vector Search with higher threshold to prevent hallucinations
     scored_docs = vector_db.similarity_search_with_relevance_scores(search_query, k=8)
     
-    # Filter docs by a lower threshold (0.1) to allow for some flexibility
-    threshold = 0.1
+    # Higher threshold (0.25) to avoid matching unrelated garbage
+    threshold = 0.25
     filtered_docs = [doc for doc, score in scored_docs if score >= threshold]
     
     context = ""
@@ -113,8 +119,12 @@ def ask_ai(user_query: str, chat_id: str):
         context = "\n---\n".join([d.page_content for d in filtered_docs])
     else:
         logging.warning(f"No documents met the relevance threshold ({threshold}) for query: {search_query}")
+        # If it's a specific product keyword, explicitly mark it as not found
+        product_keywords = ["iphone", "samsung", "plita", "mashina", "tv", "lg", "artel"]
+        if any(kw in search_query.lower() for kw in product_keywords):
+            context = "MA'LUMOT TOPILMADI: Ushbu mahsulot bazada mavjud emas."
 
-    # 3. Generate the final response
+    # 3. Generate response
     response = with_message_history.invoke(
         {"context": context, "question": user_query},
         config={"configurable": {"session_id": chat_id}}

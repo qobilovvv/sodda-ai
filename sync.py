@@ -52,7 +52,7 @@ def clean_json_field(data, lang_key="uz"):
         return str(content)
     return str(data)
 
-def extract_image_url(image_data):
+def extract_image_urls(image_data):
     if not image_data:
         return "None"
         
@@ -63,9 +63,11 @@ def extract_image_url(image_data):
             imgs = image_data
 
         if isinstance(imgs, list) and len(imgs) > 0:
-            first_image = imgs[0]
-            clean_name = first_image.replace("products/", "").replace("thumbs/", "")
-            return f"https://sodda.uz/storage/products/{clean_name}"
+            urls = []
+            for img in imgs:
+                clean_name = img.replace("products/", "").replace("thumbs/", "")
+                urls.append(f"https://sodda.uz/storage/products/{clean_name}")
+            return ",".join(urls)
     except Exception as e:
         print(f"Image parsing error: {e}")
         
@@ -82,7 +84,7 @@ def sync_vector_db():
         category = clean_json_field(p['category_title'])
         specs = clean_json_field(p['spec'])
         description = clean_json_field(p['sm_desc'])
-        image_url = extract_image_url(p['images'])
+        image_links = extract_image_urls(p['images'])
 
         page_content = (
             f"PRODUCT_TITLE: {title}\n"
@@ -90,7 +92,7 @@ def sync_vector_db():
             f"BRAND: {brand}\n"
             f"CATEGORY: {category}\n"
             f"PRICE: {p['price']} UZS\n"
-            f"IMAGE_LINK: {image_url}\n"
+            f"IMAGE_LINKS: {image_links}\n"
             f"CHARACTERISTICS: {specs}\n"
             f"DESCRIPTION: {description}\n"
             f"KEYWORDS: {p['keywords']}"

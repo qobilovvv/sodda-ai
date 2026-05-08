@@ -45,6 +45,10 @@ async def cmd_clear(message: types.Message):
     history.clear()
     await message.answer("Suhbat tarixi tozalandi!")
 
+from aiogram.utils.media_group import MediaGroupBuilder
+
+...
+
 @dp.message()
 async def handle_message(message: types.Message):
     if not message.text:
@@ -54,33 +58,47 @@ async def handle_message(message: types.Message):
         try:
             answer = ask_ai(message.text, str(message.chat.id))
             
-            # Robust image extraction using regex
-            image_match = re.search(r"IMAGE:\s*(https?://[^\s\n]+)", answer)
+            # 1. Look for IMAGES: tag (can be multiple comma-separated URLs)
+            images_match = re.search(r"IMAGES?:\s*([^\n]+)", answer)
             
-            # If the LLM repeats the placeholder 'IMAGE: ImageURL' or says 'IMAGE: None'
-            # we should skip sending a photo and just send the text.
-            if image_match:
-                image_url = image_match.group(1).strip()
-                # Remove the IMAGE: line from the text for the caption
-                caption = re.sub(r"IMAGE:\s*https?://[^\s\n]+", "", answer).strip()
+            if images_match:
+                image_links_str = images_match.group(1).strip()
+                # Remove the IMAGES line from the text for the caption/answer
+                caption = re.sub(r"IMAGES?:\s*[^\n]+", "", answer).strip()
                 
-                # Double check that we didn't just match the literal placeholder string
-                if image_url and "ImageURL" not in image_url:
-                    try:
-                        await message.answer_photo(
-                            photo=image_url, 
-                            caption=caption, 
-                            parse_mode="Markdown"
-                        )
-                        return
-                    except Exception as img_error:
-                        logging.error(f"Image send failed for {image_url}: {img_error}")
-                        # Fallback if image fails
-                        await message.answer(answer, parse_mode="Markdown")
-                        return
+                # Split and filter out placeholders
+                image_urls = [u.strip() for u in image_links_str.split(",") if "http" in u and "IMAGE_LINKS" not in u]
+                
+                if image_urls:
+                    if len(image_urls) == 1:
+                        # Single image
+                        try:
+                            await message.answer_photo(
+                                photo=image_urls[0], 
+                                caption=caption, 
+                                parse_mode="Markdown"
+                            )
+                            return
+                        except Exception as img_error:
+                            logging.error(f"Single image send failed: {img_error}")
+                    else:
+                        # Multiple images (Album)
+                        try:
+                            media_group = MediaGroupBuilder(caption=caption)
+                            # Telegram media group limit is 10
+                            for url in image_urls[:10]:
+                                media_group.add_photo(media=url)
+                            
+                            await message.answer_media_group(media=media_group.build())
+                            return
+                        except Exception as album_error:
+                            logging.error(f"Album send failed: {album_error}")
+                            # Fallback to text if album fails
+                            await message.answer(caption, parse_mode="Markdown")
+                            return
 
-            # If no valid image URL was found, remove any "IMAGE: ..." lines and send as text
-            clean_answer = re.sub(r"IMAGE:.*", "", answer).strip()
+            # 2. If no valid image URL was found, clean the text and send as text
+            clean_answer = re.sub(r"IMAGES?:.*", "", answer).strip()
             await message.answer(clean_answer, parse_mode="Markdown")
 
         except Exception as e:
