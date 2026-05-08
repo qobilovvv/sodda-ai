@@ -23,41 +23,53 @@ def get_session_history(session_id: str):
         session_id=session_id, 
         connection_string=DB_PATH
     )
-
 SYSTEM_PROMPT = """
-Siz Sodda.uz onlayn do'konining professional va xushmuomala menejerisiz. 
+Siz Sodda.uz onlayn do'konining yetakchi savdo menejerisiz. 
+Maqsadingiz: Mijozlarga eng mos maishiy texnikani topish va batafsil maslahat berish.
 
-QAT'IY QOIDALAR (ANTI-HALLUCINATION):
-1. FAQAT KONTEKSTGA TAYANING: Agar so'ralayotgan mahsulot quyidagi "Context" bo'limida bo'lmasa, u bizda yo'q deb javob bering. Hech qachon mahsulot o'ylab topmang (masalan, iPhone 17 bazada yo'q bo'lsa, uni bor deb aytish qat'iyan man etiladi).
-2. BILMAGAN NARSANGIZNI AYTMANG: Agar mahsulot Context ichida topilmasa, xushmuomalalik bilan "Kechirasiz, bazamizda bunday mahsulot topilmadi" deb javob bering.
-3. KONTEKST USTUNLIGI: Sizning ushbu mahsulot haqidagi umumiy bilimingizdan ko'ra, Context ichidagi ma'lumot muhimroq. Agar Context bo'sh bo'lsa, demak mahsulot topilmadi.
+QAT'IY QOIDALAR (ANTI-HALLUCINATION - JUDA MUHIM):
+1. FAQAT "Context" ichida berilgan mahsulotlarni tavsiya qiling. 
+2. O'ZINGIZDAN MAHSULOT YARATMANG: Hech qachon o'zingizdan mahsulot o'ylab topmang! 
+3. TOPILMAGAN HOLATDA: Agar "Context" ichida "MA'LUMOT TOPILMADI" degan so'z bo'lsa, mijozga shunchaki: "Kechirasiz, hozircha do'konimizda bu turdagi mahsulot yo'q" deb xushmuomalalik bilan javob bering va HECH QANDAY mahsulot taklif qilmang!
 
-VAZIFANGIZ:
-1. Kontekstdagi (Context) mahsulotlar asosida mijozga yordam berish.
-2. Mijoz bilan do'stona gaplashing. Faqatgina quruq ro'yxat bermasdan, gapni "Ha, albatta, bizda quyidagi modellar bor:" kabi jumlalar bilan boshlang.
-3. Agar mijoz avvalgi gaplarda ma'lum bir mahsulot haqida so'ragan bo'lsa, suhbat tarixidan (History) foydalanib o'sha mahsulot haqida suhbatni davom ettiring.
+MUKAMMAL MENEJER QOIDALARI:
+1. Do'stona bo'ling: Gapni har doim iliq so'zlar bilan boshlang.
+2. Tavsiya soni: Mijoz aniq sonini aytmasa, doim 3-4 ta eng yaxshi mahsulotni tavsiya qiling. 
+3. Batafsil ma'lumot: Context dagi CHARACTERISTICS va DESCRIPTION maydonlaridan foydalanib, har bir mahsulotning eng muhim xususiyatlarini ajratib ko'rsating.
 
 NARX VA VALYUTA:
-- Mijoz narxni so'mda so'rasa: 1 dollar = 12,800 so'm kursi bo'yicha hisoblab bering va bu taxminiy ekanligini ayting.
+- Baza (Context)dagi narxlar dollarda berilgan deb hisoblang. 
+- 1 dollar = 12 000 so'm kursi bo'yicha hisoblang.
+- Narxni har doim ikkala valyutada korsating. Masalan: 100$ | 1.200.000 so'm. 
 
-QOIDALAR:
-1. TIL: Mijoz qaysi tilda yozsa, o'sha tilda javob bering.
-2. FORMAT:
-   - RO'YXAT (Bir nechta mahsulot):
-     **[Mahsulot nomi]**
-     💰 Narxi: [Price] $
-     📌 [Tavsifdan 1 ta qisqa gap]
-     📝 *Yanada koproq malumot olishni istasangiz ushbu model nomini yozing.*
-     ---
-   - BATAFSIL (Bitta mahsulot):
-     IMAGES: [Kontekstdagi IMAGE_LINKS qatoridagi barcha linklarni vergul bilan ajratilgan holda shu yerga qo'ying]
-     **[Mahsulot nomi]**
-     💰 Narxi: [Price] $
-     🛠 Xarakteristikalar:
-     • [Xarakteristika 1]
-     [To'liq tavsif]
+JAVOB FORMATI VA AJRATUVCHILAR:
+Siz mahsulotlarni bitta katta matn qilib emas, har birini alohida xabar sifatida shakllantirishingiz kerak. Buning uchun maxsus `---PRODUCT---` belgisidan foydalaning.
 
-MUHIM: Haqiqiy IMAGE_LINKS ishlatilganiga ishonch hosil qiling. Agar rasm bo'lmasa "IMAGES: None" deb yozing. 
+Struktura quyidagicha bo'lishi SHART:
+
+[1. Mijozga qisqacha kirish so'zi]
+
+---PRODUCT---
+IMAGES: [Rasm linklari vergul bilan ajratilgan, agar yo'q bo'lsa None]
+🔹 **[Mahsulot nomi]**
+💰 Narxi: [Dollardagi narx]$ | [So'mdagi narx] so'm
+
+📝 [Context dagi DESCRIPTION (Tavsif) asosida mahsulot haqida 1-2 gap]
+
+⚙️ **Asosiy xarakteristikalari:**
+• [Xususiyat 1 (masalan: Xotira: 256GB yoki Quvvat: 2000W)]
+• [Xususiyat 2]
+• [Xususiyat 3]
+• [Xususiyat 4]
+
+💡 [Bu mahsulot nega mijozga mos kelishi haqida bitta ajoyib qulaylik]
+
+---PRODUCT---
+IMAGES: [Rasm linklari]
+🔹 **[Keyingi Mahsulot nomi]**
+...
+
+[Eng oxirgi mahsulotdan so'ng, qandaydir harakatga undovchi savol bering. Masalan: "Qaysi model xarakteristikalari sizga ko'proq ma'qul bo'ldi?"]
 
 Context:
 {context}
@@ -86,10 +98,11 @@ def ask_ai(user_query: str, chat_id: str):
     history = get_session_history(chat_id)
     history_str = "\n".join([f"{m.type}: {m.content}" for m in history.messages[-5:]])
     
+    # FIX: Explicitly tell the AI to correct Uzbek slang and typos
     rewrite_prompt = f"""
-    Suhbat tarixi va oxirgi savol asosida, mahsulotni topish uchun eng mos mahsulot nomini qaytaring.
-    Faqat mahsulot nomini yoki modelini qaytaring, ortiqcha so'zlarsiz.
-    Agar savol mahsulotga tegishli bo'lmasa, savolning o'zini qaytaring.
+    Suhbat tarixi va oxirgi savol asosida, mahsulotni topish uchun to'g'ri nomni yozing.
+    Mijoz xato yoki shevada yozgan bo'lsa (masalan 'kirmoshina' -> 'kir yuvish mashinasi', 'xaladilnik' -> 'muzlatgich', 'konditsaner' -> 'konditsioner'), uni to'g'rilab yozing.
+    Faqat mahsulot nomini qaytaring.
     
     Tarix:
     {history_str}
@@ -106,23 +119,25 @@ def ask_ai(user_query: str, chat_id: str):
         logging.error(f"Query rewrite failed: {e}")
         search_query = user_query
 
-    # 2. Vector Search with higher threshold to prevent hallucinations
+    # 2. Vector Search 
     scored_docs = vector_db.similarity_search_with_relevance_scores(search_query, k=8)
     
-    # Higher threshold (0.25) to avoid matching unrelated garbage
-    threshold = 0.25
+    # FIX: Lower threshold slightly to catch near-matches
+    threshold = 0.15 
     filtered_docs = [doc for doc, score in scored_docs if score >= threshold]
+    
+    # FIX: The Fallback. If the threshold still kills everything, give the LLM the top 3 closest matches anyway! 
+    # The LLM is smart enough to see them and say "We don't have exactly that, but look at these".
+    if not filtered_docs and scored_docs:
+        logging.warning(f"Threshold not met for '{search_query}'. Using top 3 closest matches as fallback.")
+        filtered_docs = [doc for doc, score in scored_docs[:3]]
     
     context = ""
     if filtered_docs:
         logging.info(f"Found {len(filtered_docs)} relevant documents.")
         context = "\n---\n".join([d.page_content for d in filtered_docs])
     else:
-        logging.warning(f"No documents met the relevance threshold ({threshold}) for query: {search_query}")
-        # If it's a specific product keyword, explicitly mark it as not found
-        product_keywords = ["iphone", "samsung", "plita", "mashina", "tv", "lg", "artel"]
-        if any(kw in search_query.lower() for kw in product_keywords):
-            context = "MA'LUMOT TOPILMADI: Ushbu mahsulot bazada mavjud emas."
+        context = "MA'LUMOT TOPILMADI: Ushbu mahsulot bazada mavjud emas."
 
     # 3. Generate response
     response = with_message_history.invoke(

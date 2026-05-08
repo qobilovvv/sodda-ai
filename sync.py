@@ -22,7 +22,8 @@ def fetch_products_from_mysql():
         with connection.cursor() as cursor:
             query = """
                 SELECT 
-                    p.id, p.title, p.sm_desc, p.spec, p.price, p.keywords, p.model, p.stock, p.images,
+                    p.id, p.title, p.sm_desc, p.spec, p.price, p.keywords, p.model, p.stock, 
+                    p.images, p.images_thumb,
                     c.title AS category_title,   
                     b.title AS brand_title      
                 FROM products p
@@ -57,17 +58,26 @@ def extract_image_urls(image_data):
         return "None"
         
     try:
+        # If MySQL returns it as a string, parse it into a Python list
         if isinstance(image_data, str):
             imgs = json.loads(image_data)
         else:
-            imgs = image_data
+            imgs = image_data # If pymysql already parsed the JSON
 
+        # Check if it's a list and has items
         if isinstance(imgs, list) and len(imgs) > 0:
             urls = []
             for img in imgs:
-                clean_name = img.replace("products/", "").replace("thumbs/", "")
+                # Get the base filename (UUID), stripping any accidental paths
+                clean_name = img.replace("products/", "").replace("thumbs/", "").strip("/")
+                
+                # We format it as a standard URL. 
+                # bot.py will automatically extract the UUID from this link 
+                # and check BOTH the thumb and main paths asynchronously.
                 urls.append(f"https://sodda.uz/storage/products/{clean_name}")
+                
             return ",".join(urls)
+            
     except Exception as e:
         print(f"Image parsing error: {e}")
         
@@ -84,6 +94,9 @@ def sync_vector_db():
         category = clean_json_field(p['category_title'])
         specs = clean_json_field(p['spec'])
         description = clean_json_field(p['sm_desc'])
+        
+        # You can pass p['images'] or p['images_thumb'] depending on which JSON array is more reliable.
+        # Since bot.py checks both paths anyway based on the UUID, passing p['images'] is perfect.
         image_links = extract_image_urls(p['images'])
 
         page_content = (
