@@ -3,12 +3,13 @@ import logging
 import os
 import re
 import aiohttp
+import time
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.utils.chat_action import ChatActionSender
 from aiogram.utils.media_group import MediaGroupBuilder
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from brain import ask_ai
+from brain import ask_ai, get_session_history
 from sync import sync_vector_db
 from dotenv import load_dotenv
 
@@ -21,6 +22,29 @@ logging.basicConfig(
 
 bot = Bot(token=os.getenv("TELEGRAM_TOKEN"))
 dp = Dispatcher()
+
+# Track last activity time for each chat to clean up history
+active_chats = {}
+
+def cleanup_old_chats():
+    """Finds and clears history for chats that have been inactive for more than 20 minutes."""
+    current_time = time.time()
+    expired_chats = []
+    
+    # Check for inactive chats (20 minutes = 1200 seconds)
+    for chat_id, last_active_time in active_chats.items():
+        if current_time - last_active_time > 1200:
+            expired_chats.append(chat_id)
+            
+    for chat_id in expired_chats:
+        try:
+            history = get_session_history(chat_id)
+            history.clear()
+            if chat_id in active_chats:
+                del active_chats[chat_id]
+            logging.info(f"🧹 Inactivity timeout: History for {chat_id} has been cleared.")
+        except Exception as e:
+            logging.error(f"Error clearing expired history for {chat_id}: {e}")
 
 async def get_valid_image_url(url: str) -> str | None:
     """
@@ -77,7 +101,6 @@ async def cmd_help(message: types.Message):
 
 @dp.message(Command("clear"))
 async def cmd_clear(message: types.Message):
-    from brain import get_session_history
     history = get_session_history(str(message.chat.id))
     history.clear()
     await message.answer("Suhbat tarixi tozalandi!")
@@ -87,6 +110,10 @@ async def cmd_clear(message: types.Message):
 async def handle_message(message: types.Message):
     if not message.text:
         return
+
+    # Update activity timestamp
+    chat_id_str = str(message.chat.id)
+    active_chats[chat_id_str] = time.time()
 
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
         try:
@@ -206,7 +233,13 @@ async def handle_message(message: types.Message):
 
 async def main():
     scheduler = AsyncIOScheduler()
+    
+    # Daily vector DB sync
     scheduler.add_job(sync_vector_db, 'cron', hour=0, minute=0)
+    
+    # Inactivity cleanup every 5 minutes
+    scheduler.add_job(cleanup_old_chats, 'interval', minutes=5)
+    
     scheduler.start()
 
     logging.info("🚀 Bot is starting...")
