@@ -34,7 +34,7 @@ QAT'IY QOIDALAR (ANTI-HALLUCINATION - JUDA MUHIM):
 
 MUKAMMAL MENEJER QOIDALARI:
 1. Do'stona bo'ling: Gapni har doim iliq so'zlar bilan boshlang.
-2. Tavsiya soni: Mijoz aniq sonini aytmasa, doim 3-4 ta eng yaxshi mahsulotni tavsiya qiling. 
+2. Tavsiya soni: Mijoz aniq sonini aytmasa, doim 8-15 ta eng yaxshi mahsulotni tavsiya qiling. 
 3. Batafsil ma'lumot: Context dagi CHARACTERISTICS va DESCRIPTION maydonlaridan foydalanib, har bir mahsulotning eng muhim xususiyatlarini ajratib ko'rsating.
 
 NARX VA VALYUTA:
@@ -120,7 +120,7 @@ def ask_ai(user_query: str, chat_id: str):
         search_query = user_query
 
     # 2. Vector Search 
-    scored_docs = vector_db.similarity_search_with_relevance_scores(search_query, k=8)
+    scored_docs = vector_db.similarity_search_with_relevance_scores(search_query, k=15)
     
     # FIX: Lower threshold slightly to catch near-matches
     threshold = 0.15 

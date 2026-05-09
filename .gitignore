@@ -5,3 +5,4 @@ chroma_db/
 dump.sql
 *.pyc
 .DS_Store
+venv/
