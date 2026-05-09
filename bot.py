@@ -106,6 +106,43 @@ async def cmd_clear(message: types.Message):
     await message.answer("Suhbat tarixi tozalandi!")
 
 
+def escape_html(text: str) -> str:
+    """Basic HTML escaping for safety."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+def convert_markdown_to_html(text: str) -> str:
+    """Safely converts simple Markdown (**bold**, __italic__) to HTML."""
+    # First, handle the already existing bold/italic Markdown
+    text = re.sub(r"\*\*(.*?)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"__(.*?)__", r"<i>\1</i>", text)
+    return text
+
+def strip_html(text: str) -> str:
+    """Removes all HTML tags (used as a fallback)."""
+    return re.sub(r"<[^>]+>", "", text)
+
+async def safe_send_message(message: types.Message, text: str, parse_mode: str = "HTML"):
+    """Attempts to send a message with HTML, falls back to plain text if parsing fails."""
+    try:
+        await message.answer(text, parse_mode=parse_mode)
+    except Exception as e:
+        if "can't parse entities" in str(e):
+            logging.warning(f"HTML parsing failed, falling back to plain text: {e}")
+            await message.answer(strip_html(text), parse_mode=None)
+        else:
+            raise e
+
+async def safe_send_photo(message: types.Message, photo: str, caption: str, parse_mode: str = "HTML"):
+    """Attempts to send a photo with HTML caption, falls back to plain text if parsing fails."""
+    try:
+        await message.answer_photo(photo=photo, caption=caption, parse_mode=parse_mode)
+    except Exception as e:
+        if "can't parse entities" in str(e):
+            logging.warning(f"HTML parsing failed for photo caption, falling back to plain text: {e}")
+            await message.answer_photo(photo=photo, caption=strip_html(caption), parse_mode=None)
+        else:
+            raise e
+
 @dp.message()
 async def handle_message(message: types.Message):
     if not message.text:
@@ -117,8 +154,11 @@ async def handle_message(message: types.Message):
 
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
         try:
-            # 🚀 1. Get AI response in a background thread to prevent freezing
+            # 🚀 1. Get AI response
             answer = await asyncio.to_thread(ask_ai, message.text, str(message.chat.id))
+
+            # Safety fix: Convert Markdown to HTML correctly
+            answer = convert_markdown_to_html(answer)
 
             # 2. Split products
             parts = answer.split("---PRODUCT---")
@@ -126,110 +166,59 @@ async def handle_message(message: types.Message):
             # 3. Send intro text
             intro_text = parts[0].strip()
             if intro_text:
-                await message.answer(intro_text, parse_mode="Markdown")
+                await safe_send_message(message, intro_text)
                 await asyncio.sleep(0.5)
 
             # 4. Process products
             for part in parts[1:]:
                 part = part.strip()
-
-                if not part:
-                    continue
+                if not part: continue
 
                 # Extract IMAGES tag
                 images_match = re.search(r"IMAGES?:\s*([^\n]+)", part)
-
-                # Remove image line from caption
                 caption = re.sub(r"IMAGES?:\s*[^\n]+", "", part).strip()
 
-                # Telegram caption limit
                 if len(caption) > 1024:
                     caption = caption[:1020] + "..."
 
                 image_urls = []
-
                 if images_match:
                     image_links_str = images_match.group(1).strip()
-
-                    raw_urls = [
-                        u.strip()
-                        for u in image_links_str.split(",")
-                        if "http" in u
-                        and "IMAGE_LINKS" not in u
-                        and "None" not in u
-                    ]
-
-                    # Validate image URLs concurrently
+                    raw_urls = [u.strip() for u in image_links_str.split(",") if "http" in u and "IMAGE_LINKS" not in u]
+                    
                     if raw_urls:
-                        tasks = [
-                            get_valid_image_url(u)
-                            for u in raw_urls[:10]
-                        ]
-
+                        tasks = [get_valid_image_url(u) for u in raw_urls[:10]]
                         results = await asyncio.gather(*tasks)
-
-                        # Remove failed URLs (the Nones)
-                        image_urls = [
-                            url for url in results
-                            if url is not None
-                        ]
+                        image_urls = [url for url in results if url is not None]
 
                 # Send logic
                 if image_urls:
-
-                    # Single image
                     if len(image_urls) == 1:
-                        try:
-                            await message.answer_photo(
-                                photo=image_urls[0],
-                                caption=caption,
-                                parse_mode="Markdown"
-                            )
-
-                        except Exception as img_error:
-                            logging.error(f"Single image failed: {img_error}")
-                            await message.answer(
-                                caption,
-                                parse_mode="Markdown"
-                            )
-
-                    # Multiple images
+                        await safe_send_photo(message, image_urls[0], caption)
                     else:
                         try:
                             media_group = MediaGroupBuilder(caption=caption)
-
                             for url in image_urls:
-                                media_group.add_photo(media=url)
-
-                            await message.answer_media_group(
-                                media=media_group.build()
-                            )
-
+                                media_group.add_photo(media=url, parse_mode="HTML")
+                            await message.answer_media_group(media=media_group.build())
                         except Exception as album_error:
-                            logging.error(f"Album failed: {album_error}")
-
-                            await message.answer(
-                                caption,
-                                parse_mode="Markdown"
-                            )
-
+                            if "can't parse entities" in str(album_error):
+                                logging.warning("Album HTML failed, falling back to plain text.")
+                                media_group = MediaGroupBuilder(caption=strip_html(caption))
+                                for url in image_urls:
+                                    media_group.add_photo(media=url, parse_mode=None)
+                                await message.answer_media_group(media=media_group.build())
+                            else:
+                                logging.error(f"Album failed: {album_error}")
+                                await safe_send_message(message, caption)
                 else:
-                    # No valid images
-                    await message.answer(
-                        caption,
-                        parse_mode="Markdown"
-                    )
+                    await safe_send_message(message, caption)
 
-                # Small delay between products
                 await asyncio.sleep(0.5)
 
         except Exception as e:
             logging.error(f"Error handling message: {e}")
-
-            await message.answer(
-                "Kechirasiz, texnik nosozlik yuz berdi. "
-                "Birozdan so'ng urinib ko'ring."
-            )
+            await message.answer("Kechirasiz, texnik nosozlik yuz berdi. Birozdan so'ng urinib ko'ring.")
 
 async def main():
     scheduler = AsyncIOScheduler()
