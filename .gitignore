@@ -6,3 +6,4 @@ dump.sql
 *.pyc
 .DS_Store
 venv/
+chat_history.db

@@ -33,6 +33,10 @@ QAT'IY QOIDALAR (ANTI-HALLUCINATION - JUDA MUHIM):
 1. FAQAT "Context" ichida berilgan mahsulotlarni tavsiya qiling. 
 2. O'ZINGIZDAN MAHSULOT YARATMANG: Hech qachon bazada yo'q mahsulotni (masalan, iPhone yoki boshqa brendlar) o'ylab topmang! 
 3. TOPILMAGAN HOLATDA: Agar "Context" ichida mahsulot bo'lmasa yoki "MA'LUMOT TOPILMADI" bo'lsa, mijozga: "Kechirasiz, hozircha do'konimizda bu turdagi mahsulot yo'q" deb javob bering va HECH QANDAY mahsulot taklif qilmang!
+4. FAQAT "Context" ichidagi mahsulotlarni ko'rsating.
+5. MIQDOR MUHIM: Har doim kamida 8 ta mahsulotni tavsiya qilishga harakat qiling. Agar contextda 8 tadan ko'p mahsulot bo'lsa, ularni tashlab yubormang!
+6. MOSLIK: Agar mijoz so'ragan narsaga 100% mos mahsulot bo'lmasa, unga eng yaqin bo'lgan (masalan: boshqa brend, o'xshash narx) mahsulotlarni "Sizga mana bular ham ma'qul kelishi mumkin" deb taklif qiling.
+7. "YO'Q" DEYISH: Faqatgina Context mutlaqo bo'sh bo'lsa yoki televizor so'ralganda faqat dazmol chiqib kelsa, mahsulot yo'q deb ayting.
 
 MUKAMMAL MENEJER QOIDALARI:
 1. Do'stona bo'ling: Gapni har doim iliq va professional salomlashish bilan boshlang.
@@ -100,22 +104,18 @@ with_message_history = RunnableWithMessageHistory(
 def ask_ai(user_query: str, chat_id: str):
     logging.info(f"Original Query: {user_query}")
     
-    # 1. Improved Query Rewriting
     history = get_session_history(chat_id)
     history_str = "\n".join([f"{m.type}: {m.content}" for m in history.messages[-5:]])
     
-    # FIX: Explicitly tell the AI to correct Uzbek slang and typos
+    # 1. FIXED: Query Rewriting - Retain brand, specs, and attributes!
     rewrite_prompt = f"""
-    Suhbat tarixi va oxirgi savol asosida, mahsulotni topish uchun to'g'ri nomni yozing.
-    Mijoz xato yoki shevada yozgan bo'lsa (masalan 'kirmoshina' -> 'kir yuvish mashinasi', 'xaladilnik' -> 'muzlatgich', 'konditsaner' -> 'konditsioner'), uni to'g'rilab yozing.
-    Faqat mahsulot nomini qaytaring.
-    
-    Tarix:
-    {history_str}
-    
-    Savol: {user_query}
-    
-    Qidiruv so'zi:"""
+Siz qidiruv menejerisiz. Foydalanuvchi so'rovini qidiruv tizimi tushunadigan kalit so'zlarga aylantiring.
+DIQQAT: Faqat va faqat kalit so'zlarni qaytaring. Hech qanday kirish so'zi (masalan: "Qidiruv so'zi:") bo'lmasin!
+
+Mijoz: "{user_query}"
+Tarix: {history_str}
+
+Natija (Faqat kalit so'zlar):"""
     
     try:
         rewritten_query_res = llm.invoke(rewrite_prompt)
@@ -125,22 +125,21 @@ def ask_ai(user_query: str, chat_id: str):
         logging.error(f"Query rewrite failed: {e}")
         search_query = user_query
 
-    # 2. Vector Search 
-    scored_docs = vector_db.similarity_search_with_relevance_scores(search_query, k=15)
+    # 2. FIXED: Fetch a much larger pool of products (k=35)
+    scored_docs = vector_db.similarity_search_with_relevance_scores(search_query, k=40)
     
-    # FIX: Lower threshold slightly to catch near-matches
-    threshold = 0.15 
+    # FIXED: Lower threshold to ensure we don't accidentally drop good matches.
+    threshold = 0.05 
     filtered_docs = [doc for doc, score in scored_docs if score >= threshold]
     
-    # FIX: The Fallback. If the threshold still kills everything, give the LLM the top 3 closest matches anyway! 
-    # The LLM is smart enough to see them and say "We don't have exactly that, but look at these".
+    # Fallback to top 5 if the user typed something totally abstract but we still want to try
     if not filtered_docs and scored_docs:
-        logging.warning(f"Threshold not met for '{search_query}'. Using top 3 closest matches as fallback.")
-        filtered_docs = [doc for doc, score in scored_docs[:3]]
+        logging.warning(f"Threshold not met for '{search_query}'. Using top 5 closest matches.")
+        filtered_docs = [doc for doc, score in scored_docs[:5]]
     
     context = ""
     if filtered_docs:
-        logging.info(f"Found {len(filtered_docs)} relevant documents.")
+        logging.info(f"Found {len(filtered_docs)} relevant documents passed to LLM.")
         context = "\n---\n".join([d.page_content for d in filtered_docs])
     else:
         context = "MA'LUMOT TOPILMADI: Ushbu mahsulot bazada mavjud emas."
