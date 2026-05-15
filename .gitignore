@@ -1,7 +1,6 @@
 .env
 __pycache__/
 .venv/
-chroma_db/
 dump.sql
 *.pyc
 .DS_Store
