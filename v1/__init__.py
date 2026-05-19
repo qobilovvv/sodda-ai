@@ -1,2 +1,2 @@
-"""v1 package for the Telegram manager bot."""
+"""v1: DB-search + per-product AI chat flow (no vector DB)."""
 
