@@ -253,7 +253,7 @@ def _spec_lines(specs: str, max_lines: int = 6) -> list[str]:
 async def cmd_start(message: types.Message):
     await message.answer(
         "Assalomu alaykum! Sodda.uz botiga xush kelibsiz.\n"
-        "Mahsulot qidirish uchun nomini yozing (masalan: 'iPhone 15' yoki 'muzlatgich').\n"
+        "Mahsulot qidirish uchun nomini yozing (masalan: 'televizor' yoki 'muzlatgich').\n"
         "Topilgan mahsulotlardan birini tanlab, keyin savol berishingiz mumkin."
     )
 

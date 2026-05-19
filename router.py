@@ -185,7 +185,7 @@ def route_user_message(user_text: str) -> dict[str, Any]:
                 "type": "greeting",
                 "text": (
                     "Assalomu alaykum! Qanday yordam bera olaman?\n"
-                    "Mahsulot qidirish uchun nomini yozing (masalan: <b>iPhone 15</b> yoki <b>muzlatgich</b>)."
+                    "Mahsulot qidirish uchun nomini yozing (masalan: <b>televizor</b> yoki <b>muzlatgich</b>)."
                 ),
             }
 
