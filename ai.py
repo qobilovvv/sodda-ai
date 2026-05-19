@@ -16,7 +16,7 @@ load_dotenv()
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = f"sqlite:///{os.path.join(BASE_DIR, 'v1/chat_history.db')}"
+DB_PATH = f"sqlite:///{os.path.join(BASE_DIR, 'chat_history.db')}"
 
 
 def get_session_history(session_id: str):
