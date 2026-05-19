@@ -3,9 +3,9 @@ import os
 import re
 from difflib import SequenceMatcher
 
-from v1.db import fetch_all
-from v1.filters import Filters
-from v1.products import Product, clean_json_field, product_from_row
+from db import fetch_all
+from filters import Filters
+from products import Product, clean_json_field, product_from_row
 
 
 _CORRECTIONS_PATH = os.path.join(os.path.dirname(__file__), "search_corrections.json")

@@ -5,22 +5,26 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="b73bf990-ea1c-40e2-9ab8-77ecd5864a8e" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/chat_history.db" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/README.md" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/Dockerfile" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/ai.py" beforeDir="false" afterPath="$PROJECT_DIR$/ai.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/bot.py" beforeDir="false" afterPath="$PROJECT_DIR$/bot.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/brain.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/docker-compose.yml" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/future_changes.md" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/state.db" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/sync.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/test-req.txt" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/v1/__init__.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/ai_router.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/bot_main.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/catalog.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/config.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/v1/bot.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/v1/db.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/formatting.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/images.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/retrieval_chroma.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/state_store.py" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/v1_state.sqlite3" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/v1_state.sqlite3-shm" beforeDir="false" />
-      <change beforePath="$PROJECT_DIR$/v1/v1_state.sqlite3-wal" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/v1/filters.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/v1/products.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/v1/router.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/v1/search.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/v1/search_corrections.json" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/v1/tools.py" beforeDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -71,6 +75,11 @@
     "last_opened_file_path": "/Users/macbookpro/Desktop/Yunex/sodda_ai"
   }
 }]]></component>
+  <component name="RecentsManager">
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$" />
+    </key>
+  </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>

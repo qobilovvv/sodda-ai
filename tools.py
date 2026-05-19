@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from v1.db import fetch_all, fetch_one
-from v1.products import clean_json_field, product_from_row, Product
-from v1.search import search_products
+from db import fetch_all, fetch_one
+from products import Product, clean_json_field, product_from_row
+from search import search_products
 
 
 def tool_search_products(query: str, limit: int = 10) -> list[Product]:

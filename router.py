@@ -7,7 +7,7 @@ from typing import Any, Literal
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
-from v1.tools import tool_list_brands, tool_list_categories, tool_search_products
+from tools import tool_list_brands, tool_list_categories, tool_search_products
 
 
 RouteType = Literal["products", "brands", "categories", "greeting", "advice", "chat", "intent_search"]

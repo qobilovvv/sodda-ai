@@ -8,7 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_openai import ChatOpenAI
 
-from v1.products import Product, format_price_ui, truncate
+from products import Product, format_price_ui, truncate
 
 
 warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)

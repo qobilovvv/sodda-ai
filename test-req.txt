@@ -1,9 +1,0 @@
-aiogram==3.4.1
-openai
-chromadb==0.5.3
-pymysql
-python-dotenv
-cachetools
-apscheduler
-langchain-openai>=0.1.0
-langchain-community>=0.0.30
