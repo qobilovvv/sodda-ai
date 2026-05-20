@@ -139,12 +139,14 @@ def format_price_ui(price_value: int) -> str:
     Default is USD to match current expectations.
     """
     unit = (os.getenv("SODDA_PRICE_UNIT", "USD") or "USD").upper()
+    v = int(price_value or 0)
+
     if unit == "UZS":
-        usd, uzs = format_price_dual(price_value)
+        usd, uzs = format_price_dual(v)
         return f"{usd} | {uzs}"
+
     # USD
-    usd_int = int(price_value or 0)
-    return f"{format_usd(usd_int)}$"
+    return f"{format_usd(v)}$"
 
 
 def parse_price_uzs(value) -> int:

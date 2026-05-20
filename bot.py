@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 from ai import ask_ai_about_product, general_chat, get_session_history, summarize_product, summarize_product_50w
 from products import Product, format_price_ui, truncate
-from search import get_product_by_id, normalize_query, search_products_filtered
+from search import apply_corrections, get_product_by_id, normalize_query, search_products_filtered
 from router import route_user_message
 from filters import Filters, parse_budget_usd, parse_size_range, parse_size_token
 from tools import tool_brand_options_for_query
@@ -42,14 +42,24 @@ def _looks_like_specific_product_query(q: str) -> bool:
     q = (q or "").strip()
     if not q:
         return False
-    # Heuristics: model codes/digits, long names, or many tokens => likely specific.
-    if any(ch.isdigit() for ch in q):
+    q_l = q.lower()
+
+    # If it looks like a model/SKU code (alphanumeric with both letters and digits), treat as specific.
+    # Examples: v10213242, a55, prd-1234, 55au7100, tsf01pkeu, rf295cd-mbg/hf etc.
+    if re.search(r"\b(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{5,}\b", q_l):
         return True
-    if len(q) >= 18:
+    if re.search(r"\b[a-z0-9]{2,}-[a-z0-9-]{2,}\b", q_l):
         return True
-    if len(q.split()) >= 4:
-        return True
-    return False
+
+    tokens = [t for t in q_l.split() if t]
+
+    # Without a model/SKU-like pattern, short queries should be treated as broad.
+    # Examples: "televizor samsung", "toster", "kir mashina" => not specific.
+    if len(tokens) <= 3:
+        return False
+
+    # Longer, detailed names (but without model code) can still be specific.
+    return len(q) >= 28 or len(tokens) >= 5
 
 
 def _looks_like_shop_query(text: str) -> bool:
@@ -85,6 +95,46 @@ def _detect_brand_from_text(text: str, brand_options: list[str]) -> str | None:
         if bl in txt:
             return b
     return None
+
+
+def _normalize_brand(brand: str | None, brand_options: list[str]) -> str | None:
+    """
+    Normalizes user-provided brand using search corrections and maps it to the closest offered brand.
+    """
+    if not brand:
+        return None
+    b = apply_corrections(normalize_query(brand)).strip()
+    if not b:
+        return None
+
+    # Try direct/substring match against offered options
+    for opt in brand_options or []:
+        ol = (opt or "").lower().strip()
+        if not ol:
+            continue
+        if b == ol or b in ol or ol in b:
+            return opt
+
+    # Fuzzy fallback (cheap): choose the best ratio
+    try:
+        import difflib
+
+        best_opt = None
+        best_score = 0.0
+        for opt in brand_options or []:
+            ol = (opt or "").lower().strip()
+            if not ol:
+                continue
+            score = difflib.SequenceMatcher(None, b, ol).ratio()
+            if score > best_score:
+                best_score = score
+                best_opt = opt
+        if best_opt and best_score >= 0.8:
+            return best_opt
+    except Exception:
+        pass
+
+    return b
 
 
 def cleanup_old_chats():
@@ -300,7 +350,7 @@ async def cb_choose_brand(callback: types.CallbackQuery):
     refine_state_by_chat[chat_id] = state
     await callback.answer("OK")
     await callback.message.answer(
-        "Ajoyib! Endi byudjetingizni <b>USD</b> da yozing (masalan: <b>300$ gacha</b> yoki <b>300$ dan yuqori</b>).",
+        "Byudjetingizni <b>USD</b> da yozing (masalan: <b>300$ gacha</b> yoki <b>300$ dan yuqori</b>).",
         parse_mode="HTML",
     )
 
@@ -357,7 +407,8 @@ async def handle_message(message: types.Message):
                 answer = await asyncio.to_thread(ask_ai_about_product, message.text, chat_id, product)
                 answer = convert_markdown_to_html(answer)
                 answer = sanitize_telegram_html(answer)
-                await safe_send_message(message, answer, parse_mode="HTML")
+                # Always include an exit button so user can return to normal search mode.
+                await safe_send_message(message, answer, parse_mode="HTML", reply_markup=back_keyboard())
                 return
 
             # If user is in refinement flow, parse filters and run filtered search.
@@ -373,7 +424,7 @@ async def handle_message(message: types.Message):
                 if looks_like_budget and not state.get("brand"):
                     detected = _detect_brand_from_text(message.text, offered)
                     if detected:
-                        state["brand"] = detected
+                        state["brand"] = _normalize_brand(detected, offered)
                         refine_state_by_chat[chat_id] = state
 
                 if stage == "brand" and not looks_like_budget:
@@ -384,7 +435,7 @@ async def handle_message(message: types.Message):
                         if txt.lower() == b.lower() or txt.lower() in b.lower():
                             chosen = b
                             break
-                    state["brand"] = chosen or txt
+                    state["brand"] = _normalize_brand(chosen or txt, offered)
                     state["stage"] = "budget"
                     refine_state_by_chat[chat_id] = state
                     await safe_send_message(
@@ -395,7 +446,7 @@ async def handle_message(message: types.Message):
                     return
 
                 filters = Filters()
-                filters.brand = state.get("brand")
+                filters.brand = _normalize_brand(state.get("brand"), offered)
                 min_usd, max_usd = (min_usd_try, max_usd_try) if looks_like_budget else parse_budget_usd(message.text)
                 filters.min_usd = min_usd
                 filters.max_usd = max_usd
@@ -459,7 +510,8 @@ async def handle_message(message: types.Message):
                 q_text = (routed.get("query") or message.text or "").strip()
                 f = routed.get("filters") or {}
                 filters = Filters()
-                filters.brand = f.get("brand") or None
+                # Normalize brand early using corrections; refined later against offered brands.
+                filters.brand = apply_corrections(normalize_query(f.get("brand") or "")).strip() or None
                 try:
                     filters.min_usd = int(f["min_usd"]) if f.get("min_usd") is not None else None
                 except Exception:
@@ -485,7 +537,7 @@ async def handle_message(message: types.Message):
                     brands = await asyncio.to_thread(tool_brand_options_for_query, q_clean, 8)
                     refine_state_by_chat[chat_id] = {
                         "query": q_clean,
-                        "brand": filters.brand,
+                        "brand": _normalize_brand(filters.brand, brands),
                         "size_token": parse_size_token(q_text),
                         "stage": "brand",
                         "brand_options": brands,
@@ -495,11 +547,11 @@ async def handle_message(message: types.Message):
                     if brands:
                         brand_line = "\n".join([f"• {b}" for b in brands[:8]])
                         brand_line = f"\n\n<b>Bu tur uchun mavjud brendlar:</b>\n{brand_line}"
-                    extra = "" if kb else "\n\nByudjetingizni USD da yozing (masalan: <b>300$ gacha</b>)."
+                    extra = "" if kb else "\n\nByudjet (USD): masalan <b>300$ gacha</b>."
                     await message.answer(
                         "Zo'r! Bu turdagi mahsulotlar bizda bor.\n"
                         "Eng mos variantni topish uchun byudjetingizni aniqlashtiraylik.\n"
-                        "Byudjetingiz qancha (<b>USD</b>da)? (masalan: <b>300$ gacha</b> yoki <b>300$ dan yuqori</b>)"
+                        "Byudjet (USD): masalan <b>300$ gacha</b> yoki <b>300$ dan yuqori</b>."
                         + brand_line
                         + extra,
                         parse_mode="HTML",
@@ -629,12 +681,12 @@ async def handle_message(message: types.Message):
                         brand_line = "\n".join([f"• {b}" for b in brands[:8]])
                         brand_line = f"\n\n<b>Bu tur uchun mavjud brendlar:</b>\n{brand_line}"
                     # Single message: brand is optional; user can just type budget.
-                    extra = "" if kb else "\n\nByudjetingizni USD da yozing (masalan: <b>300$ gacha</b>)."
+                    extra = "" if kb else "\n\nByudjet (USD): masalan <b>300$ gacha</b>."
                     await message.answer(
                         "Zo'r! Bu turdagi mahsulotlar bizda bor.\n"
                         "Eng mos variantni topish uchun 2 ta narsani aniqlashtiraylik:\n"
                         "1) Qaysi <b>brend</b> xohlaysiz? (xohlasangiz tanlang, bo'lmasa o'tkazib yuboring)\n"
-                        "2) Byudjetingiz qancha (<b>USD</b>da)? (masalan: <b>300$ gacha</b> yoki <b>300$ dan yuqori</b>)\n\n"
+                        "2) Byudjet (USD): masalan <b>300$ gacha</b>\n\n"
                         "<i>Agar brend tanlamasangiz, byudjetni yozishingiz kifoya — qolganini o'zim topib beraman.</i>"
                         + brand_line
                         + extra,

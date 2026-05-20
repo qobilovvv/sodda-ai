@@ -4,7 +4,7 @@ from typing import Any
 
 from db import fetch_all, fetch_one
 from products import Product, clean_json_field, product_from_row
-from search import search_products
+from search import apply_corrections, normalize_query, search_products
 
 
 def tool_search_products(query: str, limit: int = 10) -> list[Product]:
@@ -59,6 +59,9 @@ def tool_brand_options_for_query(query: str, limit: int = 10) -> list[str]:
     Returns distinct brand titles for products matching the query.
     This is used to let user choose a brand before listing products.
     """
+    q_norm = normalize_query(query)
+    q_corr = apply_corrections(q_norm) or q_norm or query
+    like = f"%{q_corr}%"
     rows = fetch_all(
         """
         SELECT DISTINCT b.title AS brand_title
@@ -73,7 +76,7 @@ def tool_brand_options_for_query(query: str, limit: int = 10) -> list[str]:
           AND b.title IS NOT NULL AND b.title <> ''
         LIMIT 50
         """,
-        (f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%", f"%{query}%"),
+        (like, like, like, like, like),
     )
     brands: list[str] = []
     for r in rows:

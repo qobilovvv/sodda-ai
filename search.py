@@ -2,11 +2,13 @@ import json
 import os
 import re
 from difflib import SequenceMatcher
+import logging
 
 from db import fetch_all
 from filters import Filters
 from products import Product, clean_json_field, product_from_row
 
+logger = logging.getLogger(__name__)
 
 _CORRECTIONS_PATH = os.path.join(os.path.dirname(__file__), "search_corrections.json")
 
@@ -85,8 +87,11 @@ def apply_corrections(q: str) -> str:
     tokens = [t for t in q.split() if t]
     if corrections:
         tokens = [corrections.get(t, t) for t in tokens]
+    return " ".join([t for t in tokens if t])
 
-    # Built-in synonyms (so it doesn't have to be in search_corrections.json)
+
+def expand_synonyms_tokens(tokens: list[str]) -> list[str]:
+    """Expands tokens with built-in synonyms for ranking only (not SQL filtering)."""
     synonyms: dict[str, list[str]] = {
         # RU -> UZ/EN
         "пылесос": ["changyutgich", "vacuum", "pilesos"],
@@ -101,14 +106,14 @@ def apply_corrections(q: str) -> str:
         "robotpilesos": ["robot", "changyutgich", "pilesos", "пылесос"],
     }
 
-    expanded: list[str] = []
+    out: list[str] = []
     for t in tokens:
-        expanded.append(t)
+        if t not in out:
+            out.append(t)
         for alt in synonyms.get(t, []):
-            if alt and alt not in expanded:
-                expanded.append(alt)
-
-    return " ".join([t for t in expanded if t])
+            if alt and alt not in out:
+                out.append(alt)
+    return out
 
 
 def _ratio(a: str, b: str) -> float:
@@ -152,7 +157,10 @@ def search_products(user_query: str, limit: int = 10) -> list[Product]:
 def _passes_filters(p: Product, filters: Filters) -> bool:
     price_unit = (os.getenv("SODDA_PRICE_UNIT", "USD") or "USD").upper()
     price_value = int(p.price_uzs or 0)
-    price_usd = price_value if price_unit == "USD" else round(price_value / 12000) if price_value else 0
+    if price_unit == "USD":
+        price_usd = price_value
+    else:
+        price_usd = round(price_value / 12000) if price_value else 0
 
     if filters.brand:
         if filters.brand.lower() not in (p.brand or "").lower():
@@ -184,11 +192,16 @@ def _passes_filters(p: Product, filters: Filters) -> bool:
 
 
 def search_products_filtered(user_query: str, filters: Filters, limit: int = 10) -> list[Product]:
-    q = apply_corrections(normalize_query(user_query))
+    q_norm = normalize_query(user_query)
+    q = apply_corrections(q_norm)
     if not q:
         return []
 
     tokens = [t for t in q.split() if t]
+    tokens_rank = expand_synonyms_tokens(tokens)
+
+    if os.getenv("DEBUG_SEARCH") == "1":
+        logger.info("SEARCH q_raw=%r q_norm=%r q_corr=%r tokens_sql=%s tokens_rank=%s filters=%s", user_query, q_norm, q, tokens[:6], tokens_rank[:12], filters)
     # Broad pre-filter in SQL using token LIKEs, then rank in Python.
     where_parts: list[str] = []
     params: list[str] = []
@@ -217,6 +230,9 @@ def search_products_filtered(user_query: str, filters: Filters, limit: int = 10)
         tuple(params),
     )
 
+    if os.getenv("DEBUG_SEARCH") == "1":
+        logger.info("SEARCH sql_rows=%d fallback=%s", len(rows), "no" if rows else "yes")
+
     # If SQL token filter returns nothing (typos, translit, etc.), do a small fallback scan
     # and rely on fuzzy ranking to find near matches (still limited to avoid heavy DB load).
     if not rows:
@@ -238,6 +254,8 @@ def search_products_filtered(user_query: str, filters: Filters, limit: int = 10)
 
     products_all = [product_from_row(r) for r in rows]
     products = [p for p in products_all if _passes_filters(p, filters)]
+    if os.getenv("DEBUG_SEARCH") == "1":
+        logger.info("SEARCH post_filter_count=%d (from %d)", len(products), len(products_all))
 
     # Exact/substring match boost: if the normalized query is contained in title/model,
     # prefer those results (useful for concrete product names).
@@ -260,25 +278,36 @@ def search_products_filtered(user_query: str, filters: Filters, limit: int = 10)
                 clean_json_field(p.description),
             ]
         )
-        score = _score_match(q, blob)
+        score = _score_match(" ".join(tokens_rank), blob)
         ranked.append((score, p))
+
+    if os.getenv("DEBUG_SEARCH") == "1" and ranked:
+        logger.info("SEARCH top_score=%.3f top_title=%r top_price=%r", ranked[0][0], ranked[0][1].title, ranked[0][1].price_uzs)
 
     ranked.sort(key=lambda x: x[0], reverse=True)
 
     def _is_specific_query(text: str) -> bool:
-        # Specific queries (model/name) should not return unrelated items.
-        if any(ch.isdigit() for ch in text):
+        # Specific queries are usually model/SKU-like (letters+digits) or long exact names.
+        t = text.lower().strip()
+        if re.search(r"\b(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{5,}\b", t):
             return True
-        tokens = text.split()
-        if len(tokens) >= 3:
+        if re.search(r"\b[a-z0-9]{2,}-[a-z0-9-]{2,}\b", t):
             return True
-        if len(text) >= 16:
-            return True
-        return False
+        tokens = t.split()
+        return len(t) >= 28 or len(tokens) >= 5
 
     # Hard guard against irrelevant queries (prevents random matches like "book").
     if ranked and ranked[0][0] < 0.45:
         return []
+
+    # For single-word queries, be stricter: avoid returning unrelated products.
+    if ranked and len(tokens) == 1:
+        qt = tokens[0]
+        top = ranked[0][1]
+        blob = normalize_query(f"{top.title} {top.model} {top.brand} {top.category} {top.keywords}")
+        has_substring = qt in blob
+        if not has_substring and ranked[0][0] < 0.75:
+            return []
 
     # For short 2-word queries, require a bit more confidence to avoid unrelated products.
     if ranked and len(tokens) <= 2 and ranked[0][0] < 0.6:
