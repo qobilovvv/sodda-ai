@@ -147,27 +147,87 @@ async def _try_brand_followup(message: types.Message) -> bool:
     if chat_id not in last_search_context_by_chat:
         return False
     cand = _extract_brand_candidate(message.text or "")
-    if not cand:
-        return False
     prev = last_search_context_by_chat[chat_id]
-    base_query = prev.get("query") or ""
+    prev_filters = prev.get("filters") or {}
+    base_query = _strip_brand_from_query(prev.get("query") or "", prev_filters.get("brand"))
     if not base_query:
         return False
     brands = await asyncio.to_thread(tool_brand_options_for_query, base_query, 80)
-    detected = _normalize_brand(cand, brands)
-    # Only treat as a brand follow-up if it matches a known brand reasonably.
+
+    # If not a simple "brand token", detect brand by scanning known brands inside the message.
+    detected = None
+    if cand:
+        detected = _normalize_brand(cand, brands)
+    if not detected:
+        msg_l = normalize_query(message.text or "")
+        for opt in brands:
+            ol = normalize_query(opt)
+            if ol and ol in msg_l:
+                detected = opt
+                break
+
     if not detected:
         return False
+
+    # Reuse previous budget if we have it; otherwise ask budget.
+    prev_max = prev_filters.get("max_usd")
+    prev_min = prev_filters.get("min_usd")
+    prev_size = prev_filters.get("size_token")
+
+    if prev_min is not None or prev_max is not None:
+        f = Filters()
+        f.brand = detected
+        f.min_usd = prev_min
+        f.max_usd = prev_max
+        f.size_token = prev_size
+        products = await asyncio.to_thread(search_products_filtered, base_query, f, 10)
+        if not products:
+            await safe_send_message(
+                message,
+                f"Afsus, <b>{detected}</b> brendida mos mahsulot topilmadi. Byudjetni o‘zgartirib ko‘rasizmi?",
+                parse_mode="HTML",
+            )
+            return True
+        last_search_context_by_chat[chat_id] = {
+            "query": base_query,
+            "filters": {"brand": detected, "min_usd": prev_min, "max_usd": prev_max, "size_token": prev_size},
+        }
+        await safe_send_message(message, f"Topilgan mahsulotlar: <b>{len(products)}</b> ta", parse_mode="HTML")
+        await asyncio.sleep(0.2)
+        for p in products:
+            if p.id in product_list_summary_cache:
+                p = _with_description(p, product_list_summary_cache[p.id])
+            else:
+                short_desc = await asyncio.to_thread(summarize_product_50w, p)
+                short_desc = convert_markdown_to_html(short_desc)
+                short_desc = sanitize_telegram_html(short_desc)
+                product_list_summary_cache[p.id] = short_desc
+                p = _with_description(p, short_desc)
+            caption = format_product_caption(p)
+            kb = product_keyboard(p.id)
+            image_urls: list[str] = []
+            if p.image_urls:
+                tasks = [get_valid_image_url(u) for u in p.image_urls[:6]]
+                results = await asyncio.gather(*tasks)
+                image_urls = [u for u in results if u]
+            if image_urls:
+                await safe_send_photo(message, image_urls[0], caption, reply_markup=kb)
+            else:
+                await safe_send_message(message, caption, parse_mode="HTML", reply_markup=kb)
+            await asyncio.sleep(0.35)
+        return True
+
     refine_state_by_chat[chat_id] = {
         "query": base_query,
         "brand": detected,
-        "size_token": prev.get("filters", {}).get("size_token"),
+        "size_token": prev_size,
         "stage": "budget",
         "brand_options": brands,
     }
     await safe_send_message(
         message,
-        f"OK, brend: <b>{detected}</b>.\nByudjet (USD): masalan <b>300$ gacha</b>.",
+        f"Ajoyib tanlov! <b>{detected}</b> brendini ko‘ramiz.\n"
+        f"Endi byudjetingizni <b>USD</b> da yozing (masalan: <b>300$ gacha</b>).",
         parse_mode="HTML",
     )
     return True
@@ -181,6 +241,8 @@ def _normalize_brand(brand: str | None, brand_options: list[str]) -> str | None:
         return None
     b = apply_corrections(normalize_query(brand)).strip()
     if not b:
+        return None
+    if b.isdigit():
         return None
 
     # Try direct/substring match against offered options
@@ -211,6 +273,18 @@ def _normalize_brand(brand: str | None, brand_options: list[str]) -> str | None:
         pass
 
     return b
+
+
+def _strip_brand_from_query(query: str, brand: str | None) -> str:
+    qn = normalize_query(query)
+    if not brand:
+        return qn
+    bn = normalize_query(brand)
+    b_tokens = {t for t in bn.split() if t}
+    if not b_tokens:
+        return qn
+    q_tokens = [t for t in qn.split() if t and t not in b_tokens]
+    return " ".join(q_tokens).strip()
 
 
 def cleanup_old_chats():
@@ -520,7 +594,8 @@ async def handle_message(message: types.Message):
                     refine_state_by_chat[chat_id] = state
                     await safe_send_message(
                         message,
-                        f"OK, brend: <b>{state['brand']}</b>.\nEndi byudjetingizni USD da yozing (masalan: <b>300$ gacha</b>).",
+                        f"Ajoyib! <b>{state['brand']}</b> brendini tanladik.\n"
+                        f"Endi byudjetingizni <b>USD</b> da yozing (masalan: <b>300$ gacha</b>).",
                         parse_mode="HTML",
                     )
                     return
@@ -538,6 +613,16 @@ async def handle_message(message: types.Message):
                 query = state.get("query") or message.text
                 products_full = await asyncio.to_thread(search_products_filtered, query, filters, 10)
                 refine_state_by_chat.pop(chat_id, None)
+                # Persist context (query + budget/brand) for follow-ups.
+                last_search_context_by_chat[chat_id] = {
+                    "query": query,
+                    "filters": {
+                        "brand": filters.brand,
+                        "min_usd": filters.min_usd,
+                        "max_usd": filters.max_usd,
+                        "size_token": filters.size_token,
+                    },
+                }
 
                 if not products_full:
                     await safe_send_message(message, "Hech narsa topilmadi. Byudjet yoki brendni o'zgartirib ko'ring.")
@@ -649,6 +734,26 @@ async def handle_message(message: types.Message):
                         )
                         return
                     brands = await asyncio.to_thread(tool_brand_options_for_query, q_clean, 8)
+                    # If user already mentioned a brand in the same message (e.g. "televizor premier"),
+                    # detect it and skip the brand-picking step.
+                    brand_from_text = _detect_brand_from_text(q_text, brands)
+                    brand_norm = _normalize_brand(filters.brand or brand_from_text, brands)
+                    if brand_norm:
+                        refine_state_by_chat[chat_id] = {
+                            "query": q_clean,
+                            "brand": brand_norm,
+                            "size_token": parse_size_token(q_text),
+                            "stage": "budget",
+                            "brand_options": brands,
+                        }
+                        await safe_send_message(
+                            message,
+                            f"Ajoyib tanlov! <b>{brand_norm}</b> brendini ko‘ramiz.\n"
+                            f"Endi byudjetingizni <b>USD</b> da yozing (masalan: <b>300$ gacha</b>).",
+                            parse_mode="HTML",
+                        )
+                        return
+
                     refine_state_by_chat[chat_id] = {
                         "query": q_clean,
                         "brand": _normalize_brand(filters.brand, brands),
@@ -763,7 +868,8 @@ async def handle_message(message: types.Message):
                         }
                         await safe_send_message(
                             message,
-                            f"OK, brend: <b>{detected}</b>.\nByudjet (USD): masalan <b>300$ gacha</b>.",
+                            f"Ajoyib tanlov! <b>{detected}</b> brendini ko‘ramiz.\n"
+                            f"Endi byudjetingizni <b>USD</b> da yozing (masalan: <b>300$ gacha</b>).",
                             parse_mode="HTML",
                         )
                         return
@@ -807,7 +913,24 @@ async def handle_message(message: types.Message):
                         await asyncio.sleep(0.35)
                     return
                 else:
-                    brands = await asyncio.to_thread(tool_brand_options_for_query, q_clean or q_text, 8)
+                    brands = await asyncio.to_thread(tool_brand_options_for_query, q_clean or q_text, 80)
+                    brand_from_text = _detect_brand_from_text(q_text, brands)
+                    brand_norm = _normalize_brand(brand_from_text, brands)
+                    if brand_norm:
+                        refine_state_by_chat[chat_id] = {
+                            "query": q_clean or q_text,
+                            "brand": brand_norm,
+                            "size_token": parse_size_token(q_text),
+                            "stage": "budget",
+                            "brand_options": brands,
+                        }
+                        await safe_send_message(
+                            message,
+                            f"Ajoyib tanlov! <b>{brand_norm}</b> brendini ko‘ramiz.\n"
+                            f"Endi byudjetingizni <b>USD</b> da yozing (masalan: <b>300$ gacha</b>).",
+                            parse_mode="HTML",
+                        )
+                        return
                     refine_state_by_chat[chat_id] = {
                         "query": q_clean or q_text,
                         "brand": None,

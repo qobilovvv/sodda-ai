@@ -77,7 +77,16 @@ def normalize_query(q: str) -> str:
         "нужен",
         "нужна",
     }
-    tokens = [t for t in q.split() if t and t not in stop]
+    raw_tokens = [t for t in q.split() if t and t not in stop]
+    # Light Uzbek plural normalization: televizorlar/televizorlari -> televizor
+    tokens: list[str] = []
+    for t in raw_tokens:
+        if len(t) > 6:
+            if t.endswith("lari") and len(t) > 8:
+                t = t[: -4]
+            elif t.endswith("lar") and len(t) > 7:
+                t = t[: -3]
+        tokens.append(t)
     q = " ".join(tokens).strip()
     return q
 
@@ -229,6 +238,7 @@ def search_products_filtered(user_query: str, filters: Filters, limit: int = 10)
         """,
         tuple(params),
     )
+    fallback_used = False
 
     if os.getenv("DEBUG_SEARCH") == "1":
         logger.info("SEARCH sql_rows=%d fallback=%s", len(rows), "no" if rows else "yes")
@@ -236,6 +246,7 @@ def search_products_filtered(user_query: str, filters: Filters, limit: int = 10)
     # If SQL token filter returns nothing (typos, translit, etc.), do a small fallback scan
     # and rely on fuzzy ranking to find near matches (still limited to avoid heavy DB load).
     if not rows:
+        fallback_used = True
         rows = fetch_all(
             """
             SELECT
@@ -299,6 +310,15 @@ def search_products_filtered(user_query: str, filters: Filters, limit: int = 10)
     # Hard guard against irrelevant queries (prevents random matches like "book").
     if ranked and ranked[0][0] < 0.45:
         return []
+
+    # If we had to use broad fallback scan, require strong evidence to avoid random items.
+    if fallback_used and ranked:
+        qtoks = tokens[:2]
+        top = ranked[0][1]
+        blob = normalize_query(f"{top.title} {top.model} {top.brand} {top.category} {top.keywords}")
+        has_substring = any(t in blob for t in qtoks if t)
+        if not has_substring and ranked[0][0] < 0.8:
+            return []
 
     # For single-word queries, be stricter: avoid returning unrelated products.
     if ranked and len(tokens) == 1:
