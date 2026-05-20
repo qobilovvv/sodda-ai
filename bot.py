@@ -32,6 +32,7 @@ active_chats: dict[str, float] = {}
 selected_product_by_chat: dict[str, int] = {}
 refine_state_by_chat: dict[str, dict] = {}
 product_list_summary_cache: dict[int, str] = {}
+last_search_context_by_chat: dict[str, dict] = {}
 
 
 def _with_description(p: Product, desc: str) -> Product:
@@ -95,6 +96,81 @@ def _detect_brand_from_text(text: str, brand_options: list[str]) -> str | None:
         if bl in txt:
             return b
     return None
+
+
+def _looks_like_brand_only_message(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    # A single short token (e.g., "LG", "Samsung", "Bosch") is likely a brand follow-up.
+    tokens = t.split()
+    if len(tokens) != 1:
+        return False
+    tok = tokens[0]
+    return 2 <= len(tok) <= 20
+
+
+def _extract_brand_candidate(text: str) -> str | None:
+    """
+    Extract brand-like token from short follow-ups like:
+      - "premier"
+      - "premier?"
+      - "premier chi?"
+      - "premierchi"
+    """
+    t = (text or "").lower().strip()
+    if not t:
+        return None
+    t = re.sub(r"[^\w\s]+", " ", t, flags=re.UNICODE).strip()
+    if not t:
+        return None
+    m = re.match(r"^(\w+)\s*chi$", t)
+    if m:
+        return m.group(1)
+    tokens = [x for x in t.split() if x]
+    if not tokens:
+        return None
+    # If user wrote two tokens like "premier chi", take the first.
+    if len(tokens) == 2 and tokens[1] == "chi":
+        return tokens[0]
+    if len(tokens) == 1:
+        return tokens[0]
+    return None
+
+
+async def _try_brand_followup(message: types.Message) -> bool:
+    """
+    If user sends a brand-like follow-up and we have last context, start budget step.
+    Returns True if handled.
+    """
+    chat_id = str(message.chat.id)
+    if chat_id not in last_search_context_by_chat:
+        return False
+    cand = _extract_brand_candidate(message.text or "")
+    if not cand:
+        return False
+    prev = last_search_context_by_chat[chat_id]
+    base_query = prev.get("query") or ""
+    if not base_query:
+        return False
+    brands = await asyncio.to_thread(tool_brand_options_for_query, base_query, 80)
+    detected = _normalize_brand(cand, brands)
+    # Only treat as a brand follow-up if it matches a known brand reasonably.
+    if not detected:
+        return False
+    refine_state_by_chat[chat_id] = {
+        "query": base_query,
+        "brand": detected,
+        "size_token": prev.get("filters", {}).get("size_token"),
+        "stage": "budget",
+        "brand_options": brands,
+    }
+    await safe_send_message(
+        message,
+        f"OK, brend: <b>{detected}</b>.\nByudjet (USD): masalan <b>300$ gacha</b>.",
+        parse_mode="HTML",
+    )
+    return True
 
 
 def _normalize_brand(brand: str | None, brand_options: list[str]) -> str | None:
@@ -395,6 +471,10 @@ async def handle_message(message: types.Message):
 
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
         try:
+            # Brand follow-up like "premier chi?" should reuse last search context.
+            if await _try_brand_followup(message):
+                return
+
             # If user is in "product chat" mode, send only selected product to AI.
             if chat_id in selected_product_by_chat:
                 product_id = selected_product_by_chat[chat_id]
@@ -501,6 +581,40 @@ async def handle_message(message: types.Message):
                 await safe_send_message(message, routed.get("text", ""), parse_mode="HTML")
                 return
             if routed.get("type") == "chat":
+                # One more chance: if user message looks like shopping intent, try DB search before chatting.
+                if _looks_like_shop_query(message.text):
+                    q_text = (message.text or "").strip()
+                    q_clean = normalize_query(q_text) or q_text
+                    products_try = await asyncio.to_thread(search_products_filtered, q_clean, Filters(), 10)
+                    if products_try:
+                        last_search_context_by_chat[chat_id] = {"query": q_clean, "filters": {}}
+                        await safe_send_message(
+                            message, f"Topilgan mahsulotlar: <b>{len(products_try)}</b> ta", parse_mode="HTML"
+                        )
+                        await asyncio.sleep(0.2)
+                        for p in products_try:
+                            if p.id in product_list_summary_cache:
+                                p = _with_description(p, product_list_summary_cache[p.id])
+                            else:
+                                short_desc = await asyncio.to_thread(summarize_product_50w, p)
+                                short_desc = convert_markdown_to_html(short_desc)
+                                short_desc = sanitize_telegram_html(short_desc)
+                                product_list_summary_cache[p.id] = short_desc
+                                p = _with_description(p, short_desc)
+                            caption = format_product_caption(p)
+                            kb = product_keyboard(p.id)
+                            image_urls: list[str] = []
+                            if p.image_urls:
+                                tasks = [get_valid_image_url(u) for u in p.image_urls[:6]]
+                                results = await asyncio.gather(*tasks)
+                                image_urls = [u for u in results if u]
+                            if image_urls:
+                                await safe_send_photo(message, image_urls[0], caption, reply_markup=kb)
+                            else:
+                                await safe_send_message(message, caption, parse_mode="HTML", reply_markup=kb)
+                            await asyncio.sleep(0.35)
+                        return
+
                 answer = await asyncio.to_thread(general_chat, chat_id, routed.get("text") or message.text)
                 answer = convert_markdown_to_html(answer)
                 answer = sanitize_telegram_html(answer)
@@ -566,6 +680,10 @@ async def handle_message(message: types.Message):
                         "Afsus, bu so'rov bo'yicha do'konimizda mahsulot topilmadi. Boshqa nom bilan urinib ko'ring.",
                     )
                     return
+                last_search_context_by_chat[chat_id] = {
+                    "query": q_clean,
+                    "filters": {"brand": filters.brand, "size_token": filters.size_token},
+                }
                 await safe_send_message(message, f"Topilgan mahsulotlar: <b>{len(products)}</b> ta", parse_mode="HTML")
                 await asyncio.sleep(0.2)
                 for p in products:
@@ -627,6 +745,28 @@ async def handle_message(message: types.Message):
             # Before listing, ask brand + budget to refine (for broad queries).
             q_text = (message.text or "").strip()
             q_clean = normalize_query(q_text)
+
+            # Brand-only follow-up: reuse last query/type from context
+            if _looks_like_brand_only_message(q_text) and chat_id in last_search_context_by_chat:
+                prev = last_search_context_by_chat[chat_id]
+                base_query = prev.get("query") or ""
+                if base_query:
+                    brands = await asyncio.to_thread(tool_brand_options_for_query, base_query, 50)
+                    detected = _normalize_brand(q_text, brands)
+                    if detected:
+                        refine_state_by_chat[chat_id] = {
+                            "query": base_query,
+                            "brand": detected,
+                            "size_token": prev.get("filters", {}).get("size_token"),
+                            "stage": "budget",
+                            "brand_options": brands,
+                        }
+                        await safe_send_message(
+                            message,
+                            f"OK, brend: <b>{detected}</b>.\nByudjet (USD): masalan <b>300$ gacha</b>.",
+                            parse_mode="HTML",
+                        )
+                        return
             if len(q_text.split()) <= 3:
                 # Only start refinement if we actually have matches for this query.
                 has_match = await asyncio.to_thread(search_products_filtered, q_clean or q_text, Filters(), 1)
@@ -709,6 +849,7 @@ async def handle_message(message: types.Message):
                     answer = sanitize_telegram_html(answer)
                     await safe_send_message(message, answer, parse_mode="HTML")
                 return
+            last_search_context_by_chat[chat_id] = {"query": q_clean or q_text, "filters": {}}
 
             await safe_send_message(message, f"Topilgan mahsulotlar: <b>{len(products)}</b> ta", parse_mode="HTML")
             await asyncio.sleep(0.2)
