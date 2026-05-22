@@ -13,7 +13,8 @@ from aiogram.utils.chat_action import ChatActionSender
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
-from ai import ask_ai_about_product, general_chat, get_session_history, summarize_product, summarize_product_50w
+from ai import ask_ai_about_product, general_chat, summarize_product, summarize_product_50w
+from history import get_session_history
 from products import Product, format_price_ui, truncate
 from search import apply_corrections, get_product_by_id, normalize_query, search_products_filtered
 from router import route_user_message
@@ -379,7 +380,8 @@ def _spec_lines(specs: str, max_lines: int = 6) -> list[str]:
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    await message.answer(
+    await safe_send_message(
+        message,
         "Assalomu alaykum! Sodda.uz botiga xush kelibsiz.\n"
         "Mahsulot qidirish uchun nomini yozing (masalan: 'televizor' yoki 'muzlatgich').\n"
         "Topilgan mahsulotlardan birini tanlab, keyin savol berishingiz mumkin."
@@ -388,7 +390,8 @@ async def cmd_start(message: types.Message):
 
 @dp.message(Command("help"))
 async def cmd_help(message: types.Message):
-    await message.answer(
+    await safe_send_message(
+        message,
         "Yordam:\n"
         "1) Qidirish: mahsulot nomi/turi yozing.\n"
         "2) Batafsil: mahsulot ostidagi tugmani bosing.\n"
@@ -404,7 +407,7 @@ async def cmd_clear(message: types.Message):
     selected_product_by_chat.pop(chat_id, None)
     refine_state_by_chat.pop(chat_id, None)
     active_chats.pop(chat_id, None)
-    await message.answer("Suhbat tarixi tozalandi!")
+    await safe_send_message(message, "Suhbat tarixi tozalandi!")
 
 
 @dp.callback_query(F.data == "back")
@@ -413,7 +416,7 @@ async def cb_back(callback: types.CallbackQuery):
     selected_product_by_chat.pop(chat_id, None)
     refine_state_by_chat.pop(chat_id, None)
     await callback.answer()
-    await callback.message.answer("Qidirish uchun mahsulot nomini yozing.")
+    await safe_send_message(callback.message, "Qidirish uchun mahsulot nomini yozing.")
 
 @dp.callback_query(F.data.startswith("brand:"))
 async def cb_choose_brand(callback: types.CallbackQuery):
@@ -427,7 +430,8 @@ async def cb_choose_brand(callback: types.CallbackQuery):
     state["stage"] = "budget"
     refine_state_by_chat[chat_id] = state
     await callback.answer("OK")
-    await callback.message.answer(
+    await safe_send_message(
+        callback.message,
         "Byudjetingizni <b>USD</b> da yozing (masalan: <b>300$ gacha</b> yoki <b>300$ dan yuqori</b>).",
         parse_mode="HTML",
     )
@@ -586,7 +590,7 @@ async def handle_message(message: types.Message):
                 return
 
             # Otherwise, treat as search query.
-            routed = await asyncio.to_thread(route_user_message, message.text, last_search_context_by_chat.get(chat_id))
+            routed = await asyncio.to_thread(route_user_message, message.text, chat_id, last_search_context_by_chat.get(chat_id))
 
             if routed.get("type") == "greeting":
                 await safe_send_message(message, routed.get("text", ""), parse_mode="HTML")
@@ -675,7 +679,8 @@ async def handle_message(message: types.Message):
                         brand_line = "\n".join([f"• {b}" for b in brands[:8]])
                         brand_line = f"\n\n<b>Bu tur uchun mavjud brendlar:</b>\n{brand_line}"
                     extra = "" if kb else "\n\nByudjet (USD): masalan <b>300$ gacha</b>."
-                    await message.answer(
+                    await safe_send_message(
+                        message,
                         "Zo'r! Bu turdagi mahsulotlar bizda bor.\n"
                         "Eng mos variantni topish uchun byudjetingizni aniqlashtiraylik.\n"
                         "Byudjet (USD): masalan <b>300$ gacha</b> yoki <b>300$ dan yuqori</b>."
@@ -826,7 +831,8 @@ async def handle_message(message: types.Message):
                         brand_line = f"\n\n<b>Bu tur uchun mavjud brendlar:</b>\n{brand_line}"
                     # Single message: brand is optional; user can just type budget.
                     extra = "" if kb else "\n\nByudjet (USD): masalan <b>300$ gacha</b>."
-                    await message.answer(
+                    await safe_send_message(
+                        message,
                         "Zo'r! Bu turdagi mahsulotlar bizda bor.\n"
                         "Eng mos variantni topish uchun 2 ta narsani aniqlashtiraylik:\n"
                         "1) Qaysi <b>brend</b> xohlaysiz? (xohlasangiz tanlang, bo'lmasa o'tkazib yuboring)\n"

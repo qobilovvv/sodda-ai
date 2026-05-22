@@ -4,51 +4,23 @@ import json
 import os
 from typing import Any, Literal
 
-from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
 from tools import tool_list_brands, tool_list_categories, tool_search_products
+from history import get_last_messages
 
 
 RouteType = Literal["products", "brands", "categories", "greeting", "advice", "chat", "intent_search"]
 
 
-@tool("search_products")
-def search_products_tool(query: str, limit: int = 10) -> str:
-    """Search products in DB and return a JSON array of product summaries."""
-    products = tool_search_products(query, limit=limit)
-    data = [
-        {
-            "id": p.id,
-            "title": p.title,
-            "model": p.model,
-            "brand": p.brand,
-            "category": p.category,
-            "price_uzs": p.price_uzs,
-            "image_urls": p.image_urls[:3],
-        }
-        for p in products
-    ]
-    return json.dumps(data, ensure_ascii=False)
-
-
-@tool("list_categories")
-def list_categories_tool(limit: int = 50) -> str:
+def list_categories_tool_call(limit: int = 50) -> str:
     """List categories from DB and return JSON array."""
     return json.dumps(tool_list_categories(limit=limit), ensure_ascii=False)
 
 
-@tool("list_brands")
-def list_brands_tool(limit: int = 50) -> str:
+def list_brands_tool_call(limit: int = 50) -> str:
     """List brands from DB and return JSON array."""
     return json.dumps(tool_list_brands(limit=limit), ensure_ascii=False)
-
-
-_router_llm = ChatOpenAI(
-    model=os.getenv("SODDA_ROUTER_MODEL", "gpt-4o-mini"),
-    temperature=0,
-    max_tokens=400,
-).bind_tools([search_products_tool, list_categories_tool, list_brands_tool])
 
 
 _intent_llm = ChatOpenAI(
@@ -58,7 +30,7 @@ _intent_llm = ChatOpenAI(
 )
 
 
-def classify_intent(user_text: str, context: dict = None) -> dict[str, Any]:
+def classify_intent(user_text: str, chat_id: str, context: dict = None) -> dict[str, Any]:
     """
     Returns JSON dict:
       intent: categories|brands|advice|product_search|chat|greeting
@@ -71,48 +43,58 @@ def classify_intent(user_text: str, context: dict = None) -> dict[str, Any]:
     if not user_text:
         return {"intent": "chat"}
 
+    # Fetch last few messages for context
+    history = get_last_messages(chat_id, limit=6)
+    history_str = ""
+    for m in history:
+        role = "Assistant" if getattr(m, "type", "") == "ai" else "User"
+        content = getattr(m, "content", "")
+        # Truncate very long messages to save tokens
+        if len(content) > 300:
+            content = content[:300] + "..."
+        history_str += f"{role}: {content}\n"
+
     prev_query = (context.get("query", "") if context else "") or ""
     prev_query = str(prev_query).strip()
-    prev_rule = (
-        f"Previous search was: '{prev_query}'. If user specifies a brand/budget, set intent to 'product_search' and keep query as '{prev_query}'.\n"
-        if prev_query
-        else ""
-    )
-
+    
     system = (
-        "You are an intent router for a Telegram shop bot.\n"
-        "The shop sells only home appliances/electronics, but users may chat freely.\n"
-        "Decide what the message means and extract filters.\n\n"
+        "You are an intent router for a Telegram shop bot (Sodda.uz).\n"
+        "The shop sells: Home appliances, Kitchen electronics, Climate tech.\n\n"
+        "Based on the conversation history and the latest message, decide the user's intent.\n"
         "Return ONLY valid JSON with keys:\n"
         '  "intent": one of ["greeting","categories","brands","advice","product_search","chat"]\n'
-        '  "query": string (only for product_search)\n'
+        '  "query": string (product name/type for product_search)\n'
         '  "brand": string|null\n'
         '  "min_usd": number|null\n'
         '  "max_usd": number|null\n'
         '  "size_token": string|null\n\n'
         "Rules:\n"
-        "- If user says only a brand (e.g. 'Samsung') or only a budget (e.g. '500$') and there is a previous search context, "
-        "intent is 'product_search', query is the previous search, and brand/budget are updated.\n"
-        "- If user asks what you sell/assortment => categories.\n"
+        "- If user asks for a specific brand or budget for a previously discussed item, set intent to 'product_search'.\n"
+        "- If user says 'Samsung' after looking for 'Televizor', query should be 'Televizor' and brand 'Samsung'.\n"
+        "- If user asks what you sell => categories.\n"
         "- If user asks 'brands/brendlar' => brands.\n"
-        "- If user asks for advice/recommendation => advice.\n"
-        "- If user is searching/asking availability/price of an item => product_search.\n"
+        "- If user asks for advice => advice.\n"
+        "- If user is searching/asking availability/price => product_search.\n"
+        "- Greeting/Thanks => greeting.\n"
         "- Otherwise => chat.\n"
-        "- If user included budget like '500$' treat it as max_usd unless explicitly 'from/above'.\n"
-        "- If user included a brand name, put it in brand.\n"
-        f"{prev_rule}"
     )
+
+    prompt = f"HISTORY:\n{history_str}\nLATEST MESSAGE: {user_text}\n\nPREVIOUS CONTEXT QUERY: {prev_query}"
 
     msgs = [
         {"role": "system", "content": system},
-        {"role": "user", "content": user_text},
+        {"role": "user", "content": prompt},
     ]
+    
     try:
         res = _intent_llm.invoke(msgs, response_format={"type": "json_object"})
-    except TypeError:
-        res = _intent_llm.bind(response_format={"type": "json_object"}).invoke(msgs)
+    except Exception:
+        # Fallback for models not supporting response_format
+        res = _intent_llm.invoke(msgs)
+
     try:
-        data = json.loads((res.content or "").strip())
+        content = (res.content or "").strip()
+        data = json.loads(content)
         if isinstance(data, dict) and "intent" in data:
             # Soft fallback: if model returned product_search with empty query, reuse previous context.
             if (data.get("intent") == "product_search") and prev_query and not (data.get("query") or "").strip():
@@ -120,117 +102,64 @@ def classify_intent(user_text: str, context: dict = None) -> dict[str, Any]:
             return data
     except Exception:
         pass
+    
     return {"intent": "product_search", "query": user_text, "brand": None, "min_usd": None, "max_usd": None, "size_token": None}
 
 
-def route_user_message(user_text: str, context: dict = None) -> dict[str, Any]:
+def route_user_message(user_text: str, chat_id: str, context: dict = None) -> dict[str, Any]:
     """
     Returns a dict:
-      - type: 'products'|'brands'|'categories'
+      - type: 'products'|'brands'|'categories'|'greeting'|'advice'|'chat'|'intent_search'
       - data: tool output (parsed JSON) or []
       - query: used query string (for products)
-      - error: optional
+      - text: text response (for greeting/advice/chat)
     """
     user_text = (user_text or "").strip()
     if not user_text:
-        return {"type": "products", "data": [], "query": ""}
+        return {"type": "chat", "text": ""}
 
-    # Simple local intent handling: greetings/thanks should not trigger DB search.
     lowered = user_text.lower().strip()
-    # Fast-path: brand/category lists should not call the LLM.
+    
+    # Fast-path for common keywords to save LLM calls
     if any(k in lowered for k in ["brend", "brand", "brands", "бренд"]):
-        raw = list_brands_tool.invoke({"limit": 5000})
+        raw = list_brands_tool_call(limit=5000)
         return {"type": "brands", "data": json.loads(raw), "query": ""}
+    
     if any(k in lowered for k in ["kategoriya", "category", "categories", "категор", "bo'lim", "bo'limlar"]):
-        raw = list_categories_tool.invoke({"limit": 5000})
+        raw = list_categories_tool_call(limit=5000)
         return {"type": "categories", "data": json.loads(raw), "query": ""}
-    # Advice intent: user asks for help choosing, not searching a specific item.
-    if any(
-        p in lowered
-        for p in [
-            "maslahat",
-            "tavsiya",
-            "yordam bering",
-            "help me choose",
-            "help choose",
-            "i need advice",
-            "need advice",
-            "recommend",
-            "recommendation",
-            "qaysi biri yaxshi",
-            "qaysi yaxshiroq",
-            "nima olsam bo'ladi",
-        ]
-    ):
-        return {
-            "type": "advice",
-            "text": (
-                "Albatta! Eng zo'r variantni tavsiya qilishim uchun 3 ta savol:\n"
-                "1) Qaysi tur kerak: <b>Katta maishiy</b>, <b>Kichik maishiy</b>, <b>Iqlim texnikasi</b> yoki <b>Uy uchun elektronika</b>?\n"
-                "2) Byudjetingiz qancha (<b>USD</b>)?\n"
-                "3) Brend bo‘yicha xohish bormi? (ixtiyoriy)\n\n"
-                "Masalan: “Konditsioner, 500$, Midea”"
-            ),
-        }
-    if any(
-        p in lowered
-        for p in [
-            "nima sotasiz",
-            "nima sotasan",
-            "nima sotiladi",
-            "nima bor",
-            "assortiment",
-            "assortment",
-            "what do you sell",
-            "what do you have",
-            "что продаете",
-            "что вы продаете",
-            "ассортимент",
-            "что есть",
-        ]
-    ):
-        # For "what do you sell?" always show categories.
-        raw = list_categories_tool.invoke({"limit": 5000})
-        return {"type": "categories", "data": json.loads(raw), "query": ""}
-    if lowered in {
-        "salom",
-        "assalomu alaykum",
-        "assalom alaykum",
-        "salam",
-        "hello",
-        "hi",
-        "hey",
-        "rahmat",
-        "thanks",
-        "thank you",
-        }:
-            return {
-                "type": "greeting",
-                "text": (
-                    "Assalomu alaykum! Qanday yordam bera olaman?\n"
-                    "Mahsulot qidirish uchun nomini yozing (masalan: <b>televizor</b> yoki <b>muzlatgich</b>)."
-                ),
-            }
 
-    # LLM intent classification for everything else.
-    intent = classify_intent(user_text, context=context)
+    if any(p in lowered for p in ["salom", "assalomu alaykum", "salam", "hello", "hi"]):
+        return {
+            "type": "greeting",
+            "text": "Assalomu alaykum! Qanday yordam bera olaman?\nMahsulot qidirish uchun nomini yozing (masalan: <b>televizor</b>)."
+        }
+
+    # LLM intent classification
+    intent = classify_intent(user_text, chat_id, context=context)
     it = (intent.get("intent") or "").strip()
+    
     if it == "greeting":
         return {
             "type": "greeting",
-            "text": (
-                "Assalomu alaykum! Qanday yordam bera olaman?\n"
-                "Mahsulot qidirish uchun nomini yozing (masalan: <b>televizor</b> yoki <b>muzlatgich</b>)."
-            ),
+            "text": "Assalomu alaykum! Qanday yordam bera olaman?\nMahsulot qidirish uchun nomini yozing."
         }
     if it == "categories":
-        raw = list_categories_tool.invoke({"limit": 5000})
+        raw = list_categories_tool_call(limit=5000)
         return {"type": "categories", "data": json.loads(raw), "query": ""}
     if it == "brands":
-        raw = list_brands_tool.invoke({"limit": 5000})
+        raw = list_brands_tool_call(limit=5000)
         return {"type": "brands", "data": json.loads(raw), "query": ""}
     if it == "advice":
-        return route_user_message("i need advice")
+        return {
+            "type": "advice",
+            "text": (
+                "Albatta! Tavsiya berishim uchun:\n"
+                "1) Nima qidiryapsiz? (masalan: konditsioner)\n"
+                "2) Byudjetingiz qancha?\n"
+                "3) Brend xohishi bormi?"
+            )
+        }
     if it == "chat":
         return {"type": "chat", "text": user_text}
     if it == "product_search":
@@ -244,4 +173,5 @@ def route_user_message(user_text: str, context: dict = None) -> dict[str, Any]:
                 "size_token": intent.get("size_token"),
             },
         }
+    
     return {"type": "chat", "text": user_text}

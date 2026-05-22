@@ -2,25 +2,16 @@ import os
 import warnings
 
 from dotenv import load_dotenv
-from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_core._api import LangChainDeprecationWarning
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_openai import ChatOpenAI
 
 from products import Product, format_price_ui, truncate
+from history import get_session_history, get_last_messages
 
 
 warnings.filterwarnings("ignore", category=LangChainDeprecationWarning)
 load_dotenv()
-
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = f"sqlite:///{os.path.join(BASE_DIR, 'chat_history.db')}"
-
-
-def get_session_history(session_id: str):
-    return SQLChatMessageHistory(session_id=session_id, connection=DB_PATH)
 
 
 SYSTEM_PROMPT = """
@@ -50,24 +41,13 @@ prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
-def _last_messages(chat_id: str, limit: int = 10):
-    """
-    Returns last `limit` messages (human+ai) from persisted SQLite history.
-    """
-    hist = get_session_history(chat_id)
-    try:
-        return list(hist.messages[-limit:])
-    except Exception:
-        return list(hist.messages)
-
-
-def _invoke_with_last_history(system_prompt: str, chat_id: str, user_text: str, limit: int = 10) -> str:
+def _invoke_with_last_history(system_prompt: str, chat_id: str, user_text: str, limit: int = 15) -> str:
     """
     Manual history windowing: send only the latest N messages to the model.
     Persists the new exchange back into SQLite.
     """
     hist = get_session_history(chat_id)
-    last = _last_messages(chat_id, limit=limit)
+    last = get_last_messages(chat_id, limit=limit)
     sys = system_prompt
     if last:
         sys = (sys or "") + "\n\nConversation already started. Do NOT greet again."
@@ -80,13 +60,7 @@ def _invoke_with_last_history(system_prompt: str, chat_id: str, user_text: str, 
     msgs.append({"role": "user", "content": user_text})
 
     res = llm.invoke(msgs)
-    out = res.content or ""
-    try:
-        hist.add_user_message(user_text)
-        hist.add_ai_message(out)
-    except Exception:
-        pass
-    return out
+    return res.content or ""
 
 
 def _product_context(p: Product, *, names_only: bool = False) -> str:
@@ -112,7 +86,7 @@ def _product_context(p: Product, *, names_only: bool = False) -> str:
 
 def ask_ai_about_product(user_query: str, chat_id: str, product: Product) -> str:
     question = f"Mahsulot ma'lumoti:\n{_product_context(product)}\n\nMijoz savoli: {user_query}"
-    return _invoke_with_last_history(SYSTEM_PROMPT, chat_id, question, limit=10)
+    return _invoke_with_last_history(SYSTEM_PROMPT, chat_id, question, limit=15)
 
 
 def summarize_product(chat_id: str, product: Product) -> str:
@@ -125,7 +99,7 @@ def summarize_product(chat_id: str, product: Product) -> str:
         "- Yakunda: “Savolingizni yozing” deb chaqiring.\n\n"
         f"Mahsulot ma'lumoti:\n{_product_context(product)}"
     )
-    return _invoke_with_last_history(SYSTEM_PROMPT, chat_id, question, limit=10)
+    return _invoke_with_last_history(SYSTEM_PROMPT, chat_id, question, limit=15)
 
 
 def summarize_product_50w(product: Product) -> str:
@@ -152,7 +126,7 @@ Siz Sodda.uz onlayn do'konining quvnoq va samimiy savdo maslahatchisisiz.
 Foydalanuvchi istalgan mavzuda yozishi mumkin: siz muloyim javob bering, lekin suhbatni do'kon yordamiga bog'lab boring.
 
 Do'kon yo'nalishlari: Katta maishiy texnika, Kichik maishiy texnika, Iqlim texnikasi, Uy uchun elektronika.
-Sizda yetkazib berish/to'lov siyosati haqida aniq ma'lumot bo'lmasa, uydirmang — aniqlashtiruvchi savol bering.
+Sizda yetkazib berish/to'lov siyosati haqica aniq ma'lumot bo'lmasa, uydirmang — aniqlashtiruvchi savol bering.
 
 JAVOB BERISHDA FAQAT HTML TEGLARIDAN (<b>, <i>) FOYDALANING.
 
@@ -166,4 +140,4 @@ def general_chat(chat_id: str, user_query: str) -> str:
     Free-form chat mode. Used when a message isn't a clear product query or DB returns no matches.
     Keeps a friendly seller tone and gently steers toward the shop catalog.
     """
-    return _invoke_with_last_history(GENERAL_SYSTEM_PROMPT, chat_id, user_query, limit=10)
+    return _invoke_with_last_history(GENERAL_SYSTEM_PROMPT, chat_id, user_query, limit=15)
