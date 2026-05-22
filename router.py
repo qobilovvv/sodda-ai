@@ -58,7 +58,7 @@ _intent_llm = ChatOpenAI(
 )
 
 
-def classify_intent(user_text: str) -> dict[str, Any]:
+def classify_intent(user_text: str, context: dict = None) -> dict[str, Any]:
     """
     Returns JSON dict:
       intent: categories|brands|advice|product_search|chat|greeting
@@ -70,6 +70,14 @@ def classify_intent(user_text: str) -> dict[str, Any]:
     user_text = (user_text or "").strip()
     if not user_text:
         return {"intent": "chat"}
+
+    prev_query = (context.get("query", "") if context else "") or ""
+    prev_query = str(prev_query).strip()
+    prev_rule = (
+        f"Previous search was: '{prev_query}'. If user specifies a brand/budget, set intent to 'product_search' and keep query as '{prev_query}'.\n"
+        if prev_query
+        else ""
+    )
 
     system = (
         "You are an intent router for a Telegram shop bot.\n"
@@ -83,6 +91,8 @@ def classify_intent(user_text: str) -> dict[str, Any]:
         '  "max_usd": number|null\n'
         '  "size_token": string|null\n\n'
         "Rules:\n"
+        "- If user says only a brand (e.g. 'Samsung') or only a budget (e.g. '500$') and there is a previous search context, "
+        "intent is 'product_search', query is the previous search, and brand/budget are updated.\n"
         "- If user asks what you sell/assortment => categories.\n"
         "- If user asks 'brands/brendlar' => brands.\n"
         "- If user asks for advice/recommendation => advice.\n"
@@ -90,24 +100,30 @@ def classify_intent(user_text: str) -> dict[str, Any]:
         "- Otherwise => chat.\n"
         "- If user included budget like '500$' treat it as max_usd unless explicitly 'from/above'.\n"
         "- If user included a brand name, put it in brand.\n"
+        f"{prev_rule}"
     )
 
-    res = _intent_llm.invoke(
-        [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_text},
-        ]
-    )
+    msgs = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_text},
+    ]
+    try:
+        res = _intent_llm.invoke(msgs, response_format={"type": "json_object"})
+    except TypeError:
+        res = _intent_llm.bind(response_format={"type": "json_object"}).invoke(msgs)
     try:
         data = json.loads((res.content or "").strip())
         if isinstance(data, dict) and "intent" in data:
+            # Soft fallback: if model returned product_search with empty query, reuse previous context.
+            if (data.get("intent") == "product_search") and prev_query and not (data.get("query") or "").strip():
+                data["query"] = prev_query
             return data
     except Exception:
         pass
     return {"intent": "product_search", "query": user_text, "brand": None, "min_usd": None, "max_usd": None, "size_token": None}
 
 
-def route_user_message(user_text: str) -> dict[str, Any]:
+def route_user_message(user_text: str, context: dict = None) -> dict[str, Any]:
     """
     Returns a dict:
       - type: 'products'|'brands'|'categories'
@@ -121,6 +137,13 @@ def route_user_message(user_text: str) -> dict[str, Any]:
 
     # Simple local intent handling: greetings/thanks should not trigger DB search.
     lowered = user_text.lower().strip()
+    # Fast-path: brand/category lists should not call the LLM.
+    if any(k in lowered for k in ["brend", "brand", "brands", "бренд"]):
+        raw = list_brands_tool.invoke({"limit": 5000})
+        return {"type": "brands", "data": json.loads(raw), "query": ""}
+    if any(k in lowered for k in ["kategoriya", "category", "categories", "категор", "bo'lim", "bo'limlar"]):
+        raw = list_categories_tool.invoke({"limit": 5000})
+        return {"type": "categories", "data": json.loads(raw), "query": ""}
     # Advice intent: user asks for help choosing, not searching a specific item.
     if any(
         p in lowered
@@ -190,7 +213,7 @@ def route_user_message(user_text: str) -> dict[str, Any]:
             }
 
     # LLM intent classification for everything else.
-    intent = classify_intent(user_text)
+    intent = classify_intent(user_text, context=context)
     it = (intent.get("intent") or "").strip()
     if it == "greeting":
         return {
@@ -221,59 +244,4 @@ def route_user_message(user_text: str) -> dict[str, Any]:
                 "size_token": intent.get("size_token"),
             },
         }
-
-    # NOTE: We intentionally do not hard-block "out of scope" queries at the router level.
-    # The catalog itself (DB results) will naturally constrain what is shown.
-
-    system = (
-        "You are a router for a shop bot. Decide which DB tool to call.\n"
-        "If user asks to see categories (kategoriyalar/bo'limlar), call list_categories.\n"
-        "If user asks about brands (brendlar/brands), call list_brands.\n"
-        "Otherwise, call search_products with query=user text.\n"
-        "Return tool output only; do not answer in natural language."
-    )
-
-    msg = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": user_text},
-    ]
-    res = _router_llm.invoke(msg)
-
-    # If the model produced tool calls, execute them.
-    tool_calls = getattr(res, "tool_calls", None) or []
-    if not tool_calls:
-        # Fallback to product search.
-        raw = search_products_tool.invoke({"query": user_text, "limit": 10})
-        data = json.loads(raw)
-        return {"type": "products", "data": data, "query": user_text}
-
-    call = tool_calls[0]
-    name = call.get("name")
-    args = call.get("args") or {}
-
-    try:
-        if name == "list_categories":
-            if "limit" not in args:
-                args["limit"] = 5000
-            raw = list_categories_tool.invoke(args)
-            return {"type": "categories", "data": json.loads(raw), "query": ""}
-        if name == "list_brands":
-            if "limit" not in args:
-                args["limit"] = 5000
-            raw = list_brands_tool.invoke(args)
-            return {"type": "brands", "data": json.loads(raw), "query": ""}
-        if name == "search_products":
-            raw = search_products_tool.invoke(args)
-            return {"type": "products", "data": json.loads(raw), "query": str(args.get("query", user_text))}
-    except Exception as e:
-        # Last-resort fallback to product search
-        try:
-            raw = search_products_tool.invoke({"query": user_text, "limit": 10})
-            data = json.loads(raw)
-            return {"type": "products", "data": data, "query": user_text, "error": str(e)}
-        except Exception:
-            return {"type": "products", "data": [], "query": user_text, "error": str(e)}
-
-    raw = search_products_tool.invoke({"query": user_text, "limit": 10})
-    data = json.loads(raw)
-    return {"type": "products", "data": data, "query": user_text}
+    return {"type": "chat", "text": user_text}

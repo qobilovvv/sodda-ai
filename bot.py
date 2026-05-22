@@ -33,58 +33,11 @@ selected_product_by_chat: dict[str, int] = {}
 refine_state_by_chat: dict[str, dict] = {}
 product_list_summary_cache: dict[int, str] = {}
 last_search_context_by_chat: dict[str, dict] = {}
+list_cache_by_chat: dict[str, dict] = {}
 
 
 def _with_description(p: Product, desc: str) -> Product:
     return dataclasses.replace(p, description=desc)
-
-
-def _looks_like_specific_product_query(q: str) -> bool:
-    q = (q or "").strip()
-    if not q:
-        return False
-    q_l = q.lower()
-
-    # If it looks like a model/SKU code (alphanumeric with both letters and digits), treat as specific.
-    # Examples: v10213242, a55, prd-1234, 55au7100, tsf01pkeu, rf295cd-mbg/hf etc.
-    if re.search(r"\b(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{5,}\b", q_l):
-        return True
-    if re.search(r"\b[a-z0-9]{2,}-[a-z0-9-]{2,}\b", q_l):
-        return True
-
-    tokens = [t for t in q_l.split() if t]
-
-    # Without a model/SKU-like pattern, short queries should be treated as broad.
-    # Examples: "televizor samsung", "toster", "kir mashina" => not specific.
-    if len(tokens) <= 3:
-        return False
-
-    # Longer, detailed names (but without model code) can still be specific.
-    return len(q) >= 28 or len(tokens) >= 5
-
-
-def _looks_like_shop_query(text: str) -> bool:
-    t = (text or "").lower()
-    keywords = [
-        "bormi",
-        "bor mi",
-        "narx",
-        "price",
-        "сколько",
-        "цена",
-        "есть",
-        "mavjud",
-        "sotib",
-        "buy",
-        "olmoq",
-        "kerak",
-        "qidir",
-        "ищу",
-        "поиск",
-        "$",
-    ]
-    return any(k in t for k in keywords)
-
 
 def _detect_brand_from_text(text: str, brand_options: list[str]) -> str | None:
     txt = (text or "").lower()
@@ -96,19 +49,6 @@ def _detect_brand_from_text(text: str, brand_options: list[str]) -> str | None:
         if bl in txt:
             return b
     return None
-
-
-def _looks_like_brand_only_message(text: str) -> bool:
-    t = (text or "").strip()
-    if not t:
-        return False
-    # A single short token (e.g., "LG", "Samsung", "Bosch") is likely a brand follow-up.
-    tokens = t.split()
-    if len(tokens) != 1:
-        return False
-    tok = tokens[0]
-    return 2 <= len(tok) <= 20
-
 
 def _extract_brand_candidate(text: str) -> str | None:
     """
@@ -136,102 +76,6 @@ def _extract_brand_candidate(text: str) -> str | None:
     if len(tokens) == 1:
         return tokens[0]
     return None
-
-
-async def _try_brand_followup(message: types.Message) -> bool:
-    """
-    If user sends a brand-like follow-up and we have last context, start budget step.
-    Returns True if handled.
-    """
-    chat_id = str(message.chat.id)
-    if chat_id not in last_search_context_by_chat:
-        return False
-    cand = _extract_brand_candidate(message.text or "")
-    prev = last_search_context_by_chat[chat_id]
-    prev_filters = prev.get("filters") or {}
-    base_query = _strip_brand_from_query(prev.get("query") or "", prev_filters.get("brand"))
-    if not base_query:
-        return False
-    brands = await asyncio.to_thread(tool_brand_options_for_query, base_query, 80)
-
-    # If not a simple "brand token", detect brand by scanning known brands inside the message.
-    detected = None
-    if cand:
-        detected = _normalize_brand(cand, brands)
-    if not detected:
-        msg_l = normalize_query(message.text or "")
-        for opt in brands:
-            ol = normalize_query(opt)
-            if ol and ol in msg_l:
-                detected = opt
-                break
-
-    if not detected:
-        return False
-
-    # Reuse previous budget if we have it; otherwise ask budget.
-    prev_max = prev_filters.get("max_usd")
-    prev_min = prev_filters.get("min_usd")
-    prev_size = prev_filters.get("size_token")
-
-    if prev_min is not None or prev_max is not None:
-        f = Filters()
-        f.brand = detected
-        f.min_usd = prev_min
-        f.max_usd = prev_max
-        f.size_token = prev_size
-        products = await asyncio.to_thread(search_products_filtered, base_query, f, 10)
-        if not products:
-            await safe_send_message(
-                message,
-                f"Afsus, <b>{detected}</b> brendida mos mahsulot topilmadi. Byudjetni o‘zgartirib ko‘rasizmi?",
-                parse_mode="HTML",
-            )
-            return True
-        last_search_context_by_chat[chat_id] = {
-            "query": base_query,
-            "filters": {"brand": detected, "min_usd": prev_min, "max_usd": prev_max, "size_token": prev_size},
-        }
-        await safe_send_message(message, f"Topilgan mahsulotlar: <b>{len(products)}</b> ta", parse_mode="HTML")
-        await asyncio.sleep(0.2)
-        for p in products:
-            if p.id in product_list_summary_cache:
-                p = _with_description(p, product_list_summary_cache[p.id])
-            else:
-                short_desc = await asyncio.to_thread(summarize_product_50w, p)
-                short_desc = convert_markdown_to_html(short_desc)
-                short_desc = sanitize_telegram_html(short_desc)
-                product_list_summary_cache[p.id] = short_desc
-                p = _with_description(p, short_desc)
-            caption = format_product_caption(p)
-            kb = product_keyboard(p.id)
-            image_urls: list[str] = []
-            if p.image_urls:
-                tasks = [get_valid_image_url(u) for u in p.image_urls[:6]]
-                results = await asyncio.gather(*tasks)
-                image_urls = [u for u in results if u]
-            if image_urls:
-                await safe_send_photo(message, image_urls[0], caption, reply_markup=kb)
-            else:
-                await safe_send_message(message, caption, parse_mode="HTML", reply_markup=kb)
-            await asyncio.sleep(0.35)
-        return True
-
-    refine_state_by_chat[chat_id] = {
-        "query": base_query,
-        "brand": detected,
-        "size_token": prev_size,
-        "stage": "budget",
-        "brand_options": brands,
-    }
-    await safe_send_message(
-        message,
-        f"Ajoyib tanlov! <b>{detected}</b> brendini ko‘ramiz.\n"
-        f"Endi byudjetingizni <b>USD</b> da yozing (masalan: <b>300$ gacha</b>).",
-        parse_mode="HTML",
-    )
-    return True
-
 
 def _normalize_brand(brand: str | None, brand_options: list[str]) -> str | None:
     """
@@ -353,9 +197,18 @@ async def safe_send_message(
 ):
     try:
         await message.answer(text, parse_mode=parse_mode, reply_markup=reply_markup)
+        # Persist bot output so LLM has context even for non-LLM steps (refinement prompts, lists, etc.).
+        try:
+            get_session_history(str(message.chat.id)).add_ai_message(text)
+        except Exception:
+            pass
     except Exception as e:
         if "can't parse entities" in str(e):
             await message.answer(strip_html(text), parse_mode=None, reply_markup=reply_markup)
+            try:
+                get_session_history(str(message.chat.id)).add_ai_message(strip_html(text))
+            except Exception:
+                pass
         else:
             raise
 
@@ -375,6 +228,73 @@ def _chunk_lines(lines: list[str], header: str, max_chars: int = 3800) -> list[s
     return chunks
 
 
+def _cache_list(chat_id: str, kind: str, items: list[str]) -> None:
+    list_cache_by_chat[chat_id] = {"kind": kind, "items": items, "offset": 0}
+
+
+def _get_cached_list(chat_id: str, kind: str) -> dict | None:
+    data = list_cache_by_chat.get(chat_id)
+    if not data:
+        return None
+    if data.get("kind") != kind:
+        return None
+    return data
+
+
+def _list_nav_keyboard(kind: str, offset: int, page_size: int, total: int) -> InlineKeyboardMarkup | None:
+    if total <= page_size:
+        return None
+    buttons: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    if offset > 0:
+        row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"list:{kind}:{max(0, offset-page_size)}"))
+    if offset + page_size < total:
+        row.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"list:{kind}:{offset+page_size}"))
+    if row:
+        buttons.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+
+
+def _format_list_page(title: str, items: list[str], offset: int, page_size: int) -> tuple[str, InlineKeyboardMarkup | None]:
+    total = len(items)
+    page = items[offset : offset + page_size]
+    header = f"<b>{title}:</b> (jami: <b>{total}</b>)"
+    lines = [f"• {it}" for it in page if it]
+    text = header + ("\n" + "\n".join(lines) if lines else "\n• (bo'sh)")
+    kind = "brendlar" if title.lower().startswith("brend") else "kategoriyalar"
+    kb = _list_nav_keyboard(kind, offset, page_size, total)
+    return text, kb
+
+
+@dp.callback_query(F.data.startswith("list:"))
+async def cb_list_nav(callback: types.CallbackQuery):
+    chat_id = str(callback.message.chat.id) if callback.message else ""
+    parts = (callback.data or "").split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    _pfx, kind, off_s = parts
+    try:
+        offset = max(0, int(off_s))
+    except Exception:
+        offset = 0
+    data = _get_cached_list(chat_id, kind)
+    if not data:
+        await callback.answer("Eskirgan")
+        return
+    items = data.get("items") or []
+    data["offset"] = offset
+    list_cache_by_chat[chat_id] = data
+    page_size = 40
+    title = "Brendlar" if kind == "brendlar" else "Kategoriyalar"
+    header = f"<b>{title}:</b> (jami: <b>{len(items)}</b>)"
+    page = items[offset : offset + page_size]
+    text = header + "\n" + "\n".join([f"• {it}" for it in page if it])
+    kb = _list_nav_keyboard(kind, offset, page_size, len(items))
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await callback.answer()
+
+
 async def safe_send_photo(
     message: types.Message,
     photo: str,
@@ -384,9 +304,17 @@ async def safe_send_photo(
 ):
     try:
         await message.answer_photo(photo=photo, caption=caption, parse_mode=parse_mode, reply_markup=reply_markup)
+        try:
+            get_session_history(str(message.chat.id)).add_ai_message(caption)
+        except Exception:
+            pass
     except Exception as e:
         if "can't parse entities" in str(e):
             await message.answer_photo(photo=photo, caption=strip_html(caption), parse_mode=None, reply_markup=reply_markup)
+            try:
+                get_session_history(str(message.chat.id)).add_ai_message(strip_html(caption))
+            except Exception:
+                pass
         else:
             raise
 
@@ -542,13 +470,14 @@ async def handle_message(message: types.Message):
 
     chat_id = str(message.chat.id)
     active_chats[chat_id] = time.time()
+    # Persist user message for consistent context across router/refine/LLM flows.
+    try:
+        get_session_history(chat_id).add_user_message(message.text)
+    except Exception:
+        pass
 
     async with ChatActionSender.typing(bot=bot, chat_id=message.chat.id):
         try:
-            # Brand follow-up like "premier chi?" should reuse last search context.
-            if await _try_brand_followup(message):
-                return
-
             # If user is in "product chat" mode, send only selected product to AI.
             if chat_id in selected_product_by_chat:
                 product_id = selected_product_by_chat[chat_id]
@@ -657,7 +586,7 @@ async def handle_message(message: types.Message):
                 return
 
             # Otherwise, treat as search query.
-            routed = await asyncio.to_thread(route_user_message, message.text)
+            routed = await asyncio.to_thread(route_user_message, message.text, last_search_context_by_chat.get(chat_id))
 
             if routed.get("type") == "greeting":
                 await safe_send_message(message, routed.get("text", ""), parse_mode="HTML")
@@ -666,47 +595,12 @@ async def handle_message(message: types.Message):
                 await safe_send_message(message, routed.get("text", ""), parse_mode="HTML")
                 return
             if routed.get("type") == "chat":
-                # One more chance: if user message looks like shopping intent, try DB search before chatting.
-                if _looks_like_shop_query(message.text):
-                    q_text = (message.text or "").strip()
-                    q_clean = normalize_query(q_text) or q_text
-                    products_try = await asyncio.to_thread(search_products_filtered, q_clean, Filters(), 10)
-                    if products_try:
-                        last_search_context_by_chat[chat_id] = {"query": q_clean, "filters": {}}
-                        await safe_send_message(
-                            message, f"Topilgan mahsulotlar: <b>{len(products_try)}</b> ta", parse_mode="HTML"
-                        )
-                        await asyncio.sleep(0.2)
-                        for p in products_try:
-                            if p.id in product_list_summary_cache:
-                                p = _with_description(p, product_list_summary_cache[p.id])
-                            else:
-                                short_desc = await asyncio.to_thread(summarize_product_50w, p)
-                                short_desc = convert_markdown_to_html(short_desc)
-                                short_desc = sanitize_telegram_html(short_desc)
-                                product_list_summary_cache[p.id] = short_desc
-                                p = _with_description(p, short_desc)
-                            caption = format_product_caption(p)
-                            kb = product_keyboard(p.id)
-                            image_urls: list[str] = []
-                            if p.image_urls:
-                                tasks = [get_valid_image_url(u) for u in p.image_urls[:6]]
-                                results = await asyncio.gather(*tasks)
-                                image_urls = [u for u in results if u]
-                            if image_urls:
-                                await safe_send_photo(message, image_urls[0], caption, reply_markup=kb)
-                            else:
-                                await safe_send_message(message, caption, parse_mode="HTML", reply_markup=kb)
-                            await asyncio.sleep(0.35)
-                        return
-
                 answer = await asyncio.to_thread(general_chat, chat_id, routed.get("text") or message.text)
                 answer = convert_markdown_to_html(answer)
                 answer = sanitize_telegram_html(answer)
                 await safe_send_message(message, answer, parse_mode="HTML")
                 return
             if routed.get("type") == "intent_search":
-                q_text = (routed.get("query") or message.text or "").strip()
                 f = routed.get("filters") or {}
                 filters = Filters()
                 # Normalize brand early using corrections; refined later against offered brands.
@@ -719,13 +613,27 @@ async def handle_message(message: types.Message):
                     filters.max_usd = int(f["max_usd"]) if f.get("max_usd") is not None else None
                 except Exception:
                     filters.max_usd = None
+                routed_query = (routed.get("query") or "").strip()
+                if not routed_query and filters.brand:
+                    await safe_send_message(
+                        message,
+                        f"Siz <b>{filters.brand}</b> brendini tanladingiz. Aynan qanday mahsulot qidiryapsiz? (masalan: <b>televizor</b>)",
+                        parse_mode="HTML",
+                    )
+                    return
+
+                q_text = (routed_query or message.text or "").strip()
                 filters.size_token = f.get("size_token") or parse_size_token(q_text)
 
                 q_clean = normalize_query(q_text) or q_text
 
                 # If user didn't provide budget/brand and query is generic, keep the refine UX.
                 missing_budget = filters.min_usd is None and filters.max_usd is None
-                if missing_budget and not _looks_like_specific_product_query(q_text):
+                q_l = (q_text or "").lower()
+                is_specific = bool(re.search(r"\b(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{5,}\b", q_l)) or bool(
+                    re.search(r"\b[a-z0-9]{2,}-[a-z0-9-]{2,}\b", q_l)
+                )
+                if missing_budget and not is_specific:
                     has_match = await asyncio.to_thread(search_products_filtered, q_clean, Filters(), 1)
                     if not has_match:
                         await safe_send_message(
@@ -821,58 +729,27 @@ async def handle_message(message: types.Message):
                     await safe_send_message(message, "Hech narsa topilmadi.")
                     return
                 title = "Kategoriyalar" if routed["type"] == "categories" else "Brendlar"
-                lines = [f"• {it.get('title','')}" for it in items if it.get("title")]
-                header = f"<b>{title}:</b> (jami: <b>{len(lines)}</b>)"
-                chunks = _chunk_lines(lines, header)
-                for i, ch in enumerate(chunks):
-                    tail = "\n\nMahsulot qidirish uchun nomini yozing." if i == len(chunks) - 1 else ""
-                    await safe_send_message(message, ch + tail, parse_mode="HTML")
-                    await asyncio.sleep(0.15)
+                flat = [it.get("title", "") for it in items if it.get("title")]
+                kind = "kategoriyalar" if routed["type"] == "categories" else "brendlar"
+                _cache_list(chat_id, kind, flat)
+                text, kb = _format_list_page(title, flat, offset=0, page_size=40)
+                text += "\n\nMahsulot qidirish uchun nomini yozing."
+                await safe_send_message(message, text, parse_mode="HTML", reply_markup=kb)
                 return
 
             # Products flow
             data = routed.get("data") or []
             if not data:
-                # If this looks like a shop/product intent but nothing matched, say not found.
-                if _looks_like_shop_query(message.text):
-                    await safe_send_message(
-                        message,
-                        "Afsus, bu so'rov bo'yicha do'konimizda mahsulot topilmadi. Boshqa nom bilan urinib ko'ring.",
-                    )
-                else:
-                    # Otherwise treat as free-form chat.
-                    answer = await asyncio.to_thread(general_chat, chat_id, message.text)
-                    answer = convert_markdown_to_html(answer)
-                    answer = sanitize_telegram_html(answer)
-                    await safe_send_message(message, answer, parse_mode="HTML")
+                await safe_send_message(
+                    message,
+                    "Afsus, bu so'rov bo'yicha do'konimizda mahsulot topilmadi. Boshqa nom bilan urinib ko'ring.",
+                )
                 return
 
             # Before listing, ask brand + budget to refine (for broad queries).
             q_text = (message.text or "").strip()
             q_clean = normalize_query(q_text)
 
-            # Brand-only follow-up: reuse last query/type from context
-            if _looks_like_brand_only_message(q_text) and chat_id in last_search_context_by_chat:
-                prev = last_search_context_by_chat[chat_id]
-                base_query = prev.get("query") or ""
-                if base_query:
-                    brands = await asyncio.to_thread(tool_brand_options_for_query, base_query, 50)
-                    detected = _normalize_brand(q_text, brands)
-                    if detected:
-                        refine_state_by_chat[chat_id] = {
-                            "query": base_query,
-                            "brand": detected,
-                            "size_token": prev.get("filters", {}).get("size_token"),
-                            "stage": "budget",
-                            "brand_options": brands,
-                        }
-                        await safe_send_message(
-                            message,
-                            f"Ajoyib tanlov! <b>{detected}</b> brendini ko‘ramiz.\n"
-                            f"Endi byudjetingizni <b>USD</b> da yozing (masalan: <b>300$ gacha</b>).",
-                            parse_mode="HTML",
-                        )
-                        return
             if len(q_text.split()) <= 3:
                 # Only start refinement if we actually have matches for this query.
                 has_match = await asyncio.to_thread(search_products_filtered, q_clean or q_text, Filters(), 1)
@@ -882,8 +759,12 @@ async def handle_message(message: types.Message):
                         "Afsus, bu so'rov bo'yicha do'konimizda mahsulot topilmadi. Boshqa nom bilan urinib ko'ring.",
                     )
                     return
+                q_l = (q_text or "").lower()
+                is_specific = bool(re.search(r"\b(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{5,}\b", q_l)) or bool(
+                    re.search(r"\b[a-z0-9]{2,}-[a-z0-9-]{2,}\b", q_l)
+                )
                 # If query looks like an exact/specific product, show results immediately (no brand/budget questions).
-                if _looks_like_specific_product_query(q_text):
+                if is_specific:
                     products_full = await asyncio.to_thread(search_products_filtered, q_text, Filters(), 1)
                     if not products_full:
                         await safe_send_message(message, "Hech narsa topilmadi. Boshqa so'z bilan urinib ko'ring.")
@@ -961,16 +842,10 @@ async def handle_message(message: types.Message):
             # For listing, fetch full products (desc/specs) directly from DB (no AI).
             products = await asyncio.to_thread(search_products_filtered, q_clean or q_text, Filters(), 10)
             if not products:
-                if _looks_like_shop_query(message.text):
-                    await safe_send_message(
-                        message,
-                        "Afsus, bu so'rov bo'yicha do'konimizda mahsulot topilmadi. Boshqa nom bilan urinib ko'ring.",
-                    )
-                else:
-                    answer = await asyncio.to_thread(general_chat, chat_id, message.text)
-                    answer = convert_markdown_to_html(answer)
-                    answer = sanitize_telegram_html(answer)
-                    await safe_send_message(message, answer, parse_mode="HTML")
+                await safe_send_message(
+                    message,
+                    "Afsus, bu so'rov bo'yicha do'konimizda mahsulot topilmadi. Boshqa nom bilan urinib ko'ring.",
+                )
                 return
             last_search_context_by_chat[chat_id] = {"query": q_clean or q_text, "filters": {}}
 

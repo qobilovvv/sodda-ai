@@ -131,20 +131,28 @@ def _ratio(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b).ratio()
 
 
-def _score_match(query: str, blob: str) -> float:
-    # Token-average best match + substring boosts
-    q_tokens = [t for t in query.split() if t]
+def _score_match(query: str, product: Product) -> float:
+    """
+    Token-average fuzzy match + field-weighted substring bonuses.
+    - High bonus if token found in title/model (+2.0)
+    - Low bonus if token found in description/keywords (+0.5)
+    """
+    q_tokens = [t for t in (query or "").split() if t]
     if not q_tokens:
         return 0.0
-    blob_l = blob.lower()
-    blob_tokens = re.findall(r"[\w\-]+", blob_l, flags=re.UNICODE)
-    if not blob_tokens:
-        blob_tokens = [blob_l]
+
+    title_l = (product.title or "").lower()
+    model_l = (product.model or "").lower()
+    desc_l = clean_json_field(product.description).lower()
+    keywords_l = (product.keywords or "").lower()
+    brand_l = (product.brand or "").lower()
+    category_l = (product.category or "").lower()
+    blob_l = " ".join([title_l, model_l, brand_l, category_l, keywords_l, desc_l]).strip()
+    blob_tokens = re.findall(r"[\w\-]+", blob_l, flags=re.UNICODE) or [blob_l]
 
     scores: list[float] = []
     for t in q_tokens:
-        if t in blob_l:
-            scores.append(1.0)
+        if not t:
             continue
         best = 0.0
         for w in blob_tokens:
@@ -153,9 +161,16 @@ def _score_match(query: str, blob: str) -> float:
             best = max(best, _ratio(t, w))
             if best >= 0.92:
                 break
-        scores.append(best)
+
+        bonus = 0.0
+        if t in title_l or t in model_l:
+            bonus += 2.0
+        elif t in desc_l or t in keywords_l:
+            bonus += 0.5
+
+        scores.append(best + bonus)
+
     base = sum(scores) / max(1, len(scores))
-    # Slight boost for longer (more specific) queries
     return base + min(0.15, 0.02 * max(0, len(query) - 6))
 
 
@@ -279,17 +294,7 @@ def search_products_filtered(user_query: str, filters: Filters, limit: int = 10)
         return exact[:limit]
     ranked: list[tuple[float, Product]] = []
     for p in products:
-        blob = " ".join(
-            [
-                p.title,
-                p.model,
-                p.brand,
-                p.category,
-                p.keywords,
-                clean_json_field(p.description),
-            ]
-        )
-        score = _score_match(" ".join(tokens_rank), blob)
+        score = _score_match(" ".join(tokens_rank), p)
         ranked.append((score, p))
 
     if os.getenv("DEBUG_SEARCH") == "1" and ranked:
@@ -308,7 +313,7 @@ def search_products_filtered(user_query: str, filters: Filters, limit: int = 10)
         return len(t) >= 28 or len(tokens) >= 5
 
     # Hard guard against irrelevant queries (prevents random matches like "book").
-    if ranked and ranked[0][0] < 0.45:
+    if ranked and ranked[0][0] < 0.65:
         return []
 
     # If we had to use broad fallback scan, require strong evidence to avoid random items.
@@ -344,7 +349,7 @@ def search_products_filtered(user_query: str, filters: Filters, limit: int = 10)
         return [ranked[0][1]]
 
     # Filter out very weak matches, but keep at least a few results if any exist.
-    strong = [p for s, p in ranked if s >= 0.55]
+    strong = [p for s, p in ranked if s >= 0.75]
     if strong:
         return strong[:limit]
     return [p for _, p in ranked[:limit]]
