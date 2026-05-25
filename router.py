@@ -69,6 +69,7 @@ def classify_intent(user_text: str, chat_id: str, context: dict = None) -> dict[
         '  "max_usd": number|null\n'
         '  "size_token": string|null\n\n'
         "Rules:\n"
+        "- If the user provides a specific product model or code (e.g., 'PRM-G60-E40BL', 'HXC39AG50Q', 'BOSCH HXC39AG50Q'), set intent to 'product_search' and keep the exact model/code in the 'query'. These are very specific requests.\n"
         "- If user asks for a specific brand or budget for a previously discussed item, set intent to 'product_search'.\n"
         "- If user says 'Samsung' after looking for 'Televizor', query should be 'Televizor' and brand 'Samsung'.\n"
         "- If user asks what you sell => categories.\n"

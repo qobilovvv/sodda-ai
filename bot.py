@@ -634,9 +634,9 @@ async def handle_message(message: types.Message):
                 # If user didn't provide budget/brand and query is generic, keep the refine UX.
                 missing_budget = filters.min_usd is None and filters.max_usd is None
                 q_l = (q_text or "").lower()
-                is_specific = bool(re.search(r"\b(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{5,}\b", q_l)) or bool(
-                    re.search(r"\b[a-z0-9]{2,}-[a-z0-9-]{2,}\b", q_l)
-                )
+                is_specific = bool(re.search(r"\b(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{4,}\b", q_l)) or \
+                              bool(re.search(r"\b[a-z0-9]{2,}-[a-z0-9-]{2,}\b", q_l)) or \
+                              bool(re.search(r"\bprm-[a-z0-9-]+\b", q_l))
                 if missing_budget and not is_specific:
                     has_match = await asyncio.to_thread(search_products_filtered, q_clean, Filters(), 1)
                     if not has_match:
@@ -765,9 +765,9 @@ async def handle_message(message: types.Message):
                     )
                     return
                 q_l = (q_text or "").lower()
-                is_specific = bool(re.search(r"\b(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{5,}\b", q_l)) or bool(
-                    re.search(r"\b[a-z0-9]{2,}-[a-z0-9-]{2,}\b", q_l)
-                )
+                is_specific = bool(re.search(r"\b(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{4,}\b", q_l)) or \
+                              bool(re.search(r"\b[a-z0-9]{2,}-[a-z0-9-]{2,}\b", q_l)) or \
+                              bool(re.search(r"\bprm-[a-z0-9-]+\b", q_l))
                 # If query looks like an exact/specific product, show results immediately (no brand/budget questions).
                 if is_specific:
                     products_full = await asyncio.to_thread(search_products_filtered, q_text, Filters(), 1)

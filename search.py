@@ -305,9 +305,11 @@ def search_products_filtered(user_query: str, filters: Filters, limit: int = 10)
     def _is_specific_query(text: str) -> bool:
         # Specific queries are usually model/SKU-like (letters+digits) or long exact names.
         t = text.lower().strip()
-        if re.search(r"\b(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{5,}\b", t):
+        if re.search(r"\b(?=[a-z0-9-]*\d)(?=[a-z0-9-]*[a-z])[a-z0-9-]{4,}\b", t):
             return True
         if re.search(r"\b[a-z0-9]{2,}-[a-z0-9-]{2,}\b", t):
+            return True
+        if re.search(r"\bprm-[a-z0-9-]+\b", t):
             return True
         tokens = t.split()
         return len(t) >= 28 or len(tokens) >= 5
